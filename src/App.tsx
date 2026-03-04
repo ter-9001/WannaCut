@@ -42,7 +42,16 @@ import {
   Sparkles,
   VideoOff,
   ImageIcon,
-  Search
+  Search,
+  Settings2, 
+  Type, 
+  Video, 
+  Volume2, 
+  Layers, 
+  Maximize, 
+  Rotate3d, 
+  Key, 
+  Wind
   
 } from 'lucide-react';
 
@@ -439,21 +448,6 @@ const updateAudio = () => {
   }  
       
 
-  /*
-  const sorted_tracks = order_tracks();
-  const sortedTracksId = sorted_tracks.map(t => t.id);
-
-  const sortedClips = currentClips.sort((a, b) => {
-    const trackA = sortedTracksId.indexOf(a.trackId);
-    const trackB = sortedTracksId.indexOf(b.trackId);
-    return trackA - trackB;
-  });
-  
-  */
-  
-
-
-
   const winner = currentClips || null;
 
   //console.log('present audios', winner)
@@ -616,11 +610,20 @@ useEffect(() => {
 }, [playheadPos])
 
 
+const lastFrameTimeRef = useRef<number>(0);
+const FPS_LIMIT = 1000 / 10; // 30 FPS (aprox 33ms)
+
 
 //Render main frame
-  const drawFrame = async (time: number) => {
+const drawFrame = async (time: number) => {
     if (!canvasRef.current) return;
-    
+
+
+    const now = performance.now();
+    if (now - lastFrameTimeRef.current < FPS_LIMIT) 
+      return;
+    lastFrameTimeRef.current = now;
+      
     const ctx = canvasRef.current.getContext('2d');
 
 
@@ -662,22 +665,16 @@ useEffect(() => {
     }
   }
 
-
-
 useEffect(() => {
   if (isPlaying) {
     updatePreview(currentTime);
-    drawFrame(currentTime)
     updateAudio()
+    drawFrame(currentTime)
 
     
 
-
-   
-
   }
 }, [isPlaying, currentTime, clips]);
-
 
 
 
@@ -692,21 +689,20 @@ const currentTimeRef = useRef(0);
 const animate = (time: number) => {
   if (lastTimeRef.current !== null) {
     const deltaTime = (time - lastTimeRef.current) / 1000;
+
+  
     
-    // 1. Atualiza a REF (é aqui que o tempo realmente "anda")
+   // 1. Update the REF (this is where time really "moves")
     currentTimeRef.current += deltaTime;
     const currentPos = currentTimeRef.current * pixelsPerSecond;
 
-    // 2. Move a agulha via DOM
+   // 2. Move the needle via DOM.
     if (playheadRef.current) {
       playheadRef.current.style.transform = `translateX(${currentPos}px)`;
     }
 
-
-
-
    
-    // 3. Atualiza o estado do cronômetro apenas as vezes
+ // 3. Updates the stopwatch status only occasionally.
     if (time - lastUpdateRef.current > 100) {
       setCurrentTime(currentTimeRef.current); 
       lastUpdateRef.current = time;
@@ -716,46 +712,11 @@ const animate = (time: number) => {
   requestRef.current = requestAnimationFrame(animate);
 };
 
-/*
-
-const animate = (time: number) => {
-  if (lastTimeRef.current !== null) {
-    const deltaTime = (time - lastTimeRef.current) / 1000;
-    
-    // Atualizamos o valor REAL (acumulado) na Ref
-    // Isso garante que o cálculo não se perca entre as renderizações
-    playheadPosRef.current += deltaTime * PIXELS_PER_SECOND;
-
-    // 3. O "Filtro" de 10 vezes por segundo (Throttling)
-    if (time - lastUpdateRef.current > 100) { // 100ms = 10Hz
-      
-      // Agora sim, atualizamos o estado com o valor da Ref
-      setPlayheadPos(playheadPosRef.current);
-      
-      lastUpdateRef.current = time;
-
-      // Auto-scroll (pode ficar aqui dentro para economizar CPU)
-      if (timelineContainerRef.current) {
-        const container = timelineContainerRef.current;
-        const scrollRight = container.scrollLeft + container.clientWidth;
-        if (playheadPosRef.current > scrollRight - 50) {
-          container.scrollLeft += 10; 
-        }
-      }
-    }
-  }
-  
-  lastTimeRef.current = time;
-  requestRef.current = requestAnimationFrame(animate);
-};
-
-
-
-*/
 
 useEffect(() => {
   if (isPlaying) {
     requestRef.current = requestAnimationFrame(animate);
+    
   } else {
     //if (requestRef.current) cancelAnimationFrame(requestRef.current);
     lastTimeRef.current = null;
@@ -1997,6 +1958,16 @@ const canvasRef2 = useRef<HTMLCanvasElement>(null);
 
     // Render Video Frame to Auxiliar Monitor
     const renderFrame2 = async (time: number) => {
+    if (!canvasRef2.current) return;
+
+
+
+       const now = performance.now();
+        if (now - lastFrameTimeRef.current < FPS_LIMIT) 
+          return;
+        lastFrameTimeRef.current = now;
+          
+
 
 
       
@@ -2218,6 +2189,9 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   //colect subclip if its dropped
   const data = e.dataTransfer.getData("application/json") || null;
   const droppedClip = data ? JSON.parse(data) : null;
+
+
+  
   
 
 
@@ -2244,15 +2218,24 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   const margin = 20;
 
   // If drop above or below, but close a new track is created
+
+
+  if(droppedClip && droppedClip.beginmoment && droppedClip.beginmoment > 0)
+  {
+    if (relativeY < -margin) {
+       createClipOnNewTrack(droppedClip.name, dropTime, droppedClip.beginmoment)     
+    } else if (relativeY > totalTracksHeight + margin) {
+       createClipOnNewTrack(droppedClip.name, dropTime, droppedClip.beginmoment) 
+    }
+  
+  return
+  }
   
   if (relativeY < -margin) {
-    droppedClip.beginmoment ? createClipOnNewTrack(droppedClip.name, dropTime, droppedClip.beginmoment) : createClipOnNewTrack(assetName, dropTime);
+    createClipOnNewTrack(assetName, dropTime);
     
   } else if (relativeY > totalTracksHeight + margin) {
-    droppedClip.beginmoment ? createClipOnNewTrack(droppedClip.name, dropTime, droppedClip.beginmoment) : createClipOnNewTrack(assetName, dropTime);
-
-    
-
+    createClipOnNewTrack(assetName, dropTime);
   }
 
   
@@ -3055,6 +3038,138 @@ const handleImportFile = async () => {
   //oping project
   useEffect(() => { if (!isSetupOpen && currentProjectPath) loadAssets(); }, [isSetupOpen]);
 
+
+  //elements for aside of config clips
+
+  // Subcomponent for inputs with Keyframe icon
+  const PropertyRow = ({ label, children, keyframable = true }: { label: string, children: React.ReactNode, keyframable?: boolean }) => (
+    <div className="flex flex-col gap-2 mb-4">
+      <div className="flex justify-between items-center">
+        <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-tighter">{label}</label>
+        {keyframable && (
+          <button className="text-zinc-600 hover:text-indigo-400 transition-colors">
+            <Key size={10} />
+          </button>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+
+  const PropertiesAside = ({ selectedClip }: { selectedClip: any }) => {
+    if (!selectedClip) return null;
+
+    const isVideo = selectedClip.clip_type === "video" || selectedClip.path.endsWith(".mp4");
+    const isAudio = selectedClip.clip_type === "audio" || selectedClip.path.endsWith(".mp3") || selectedClip.path.endsWith(".wav");
+    const isText = selectedClip.clip_type === "text";
+
+    return (
+      <aside className="w-72 bg-[#090909] border-l border-white/5 flex flex-col h-full overflow-hidden animate-in slide-in-from-right duration-300">
+        {/* Header */}
+        <div className="p-4 border-b border-white/5 flex items-center gap-3">
+          <div className="p-2 bg-indigo-500/10 rounded-lg">
+            {isVideo && <Video size={16} className="text-indigo-400" />}
+            {isAudio && <Volume2 size={16} className="text-indigo-400" />}
+            {isText && <Type size={16} className="text-indigo-400" />}
+          </div>
+          <div>
+            <h2 className="text-[11px] font-black uppercase tracking-widest text-white">Inspector</h2>
+            <p className="text-[9px] text-zinc-500 truncate w-40">{selectedClip.name || "Selected Clip"}</p>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6">
+          
+          {/* SECTION: BASIC */}
+          <section>
+            <div className="flex items-center gap-2 mb-4 text-indigo-400">
+              <Settings2 size={12} />
+              <span className="text-[10px] font-black uppercase tracking-widest">Basic</span>
+            </div>
+
+            {(isVideo || isText) && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <PropertyRow label="Position X"><input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
+                  <PropertyRow label="Position Y"><input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
+                </div>
+                <PropertyRow label="Zoom"><input type="range" className="w-full accent-indigo-500" /></PropertyRow>
+              </>
+            )}
+
+            {isText && (
+              <>
+                <PropertyRow label="Font" keyframable={false}>
+                  <select className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none">
+                    <option>Inter</option>
+                    <option>Roboto</option>
+                    <option>Monospace</option>
+                  </select>
+                </PropertyRow>
+                <PropertyRow label="Color"><input type="color" className="w-full h-8 bg-transparent border-none rounded cursor-pointer" /></PropertyRow>
+              </>
+            )}
+
+            {isAudio && (
+              <PropertyRow label="Volume"><input type="range" className="w-full accent-indigo-500" /></PropertyRow>
+            )}
+
+            <PropertyRow label="Opacity"><input type="range" className="w-full accent-indigo-500" /></PropertyRow>
+            <PropertyRow label="Speed"><input type="number" step="0.1" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white w-full" /></PropertyRow>
+
+            {(isVideo || isText) && (
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <PropertyRow label="Rotation"><input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
+                <PropertyRow label="3D Rot"><input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
+              </div>
+            )}
+          </section>
+
+          {/* SECTION: FADES */}
+          <section className="pt-4 border-t border-white/5">
+            <div className="flex items-center gap-2 mb-4 text-zinc-400">
+              <Wind size={12} />
+              <span className="text-[10px] font-black uppercase tracking-widest">Transitions</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <PropertyRow label="Fade In" keyframable={false}><input type="text" placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
+              <PropertyRow label="Fade Out" keyframable={false}><input type="text" placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
+            </div>
+          </section>
+
+          {/* SECTION: BLEND & MASK (Videos and Text only) */}
+          {!isAudio && (
+            <section className="pt-4 border-t border-white/5">
+              <div className="flex items-center gap-2 mb-4 text-zinc-400">
+                <Layers size={12} />
+                <span className="text-[10px] font-black uppercase tracking-widest">Advanced</span>
+              </div>
+              <PropertyRow label="Blend Mode" keyframable={false}>
+                <select className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white w-full outline-none">
+                  <option>Normal</option>
+                  <option>Screen</option>
+                  <option>Multiply</option>
+                  <option>Overlay</option>
+                </select>
+              </PropertyRow>
+              <PropertyRow label="Mask" keyframable={false}>
+                <button className="w-full bg-white/5 border border-white/5 rounded py-2 text-[9px] font-bold hover:bg-white/10 transition-colors uppercase">Edit Mask</button>
+              </PropertyRow>
+            </section>
+          )}
+
+        </div>
+      </aside>
+    );
+  };
+
+
+
+
+
+
+
   // --- RENDER ---
 return (
   <div className="flex flex-col h-screen w-screen bg-black text-zinc-300 font-sans overflow-hidden select-none">
@@ -3448,7 +3563,7 @@ return (
                   >
                    
 
-                    <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-contain" />
+                    <canvas ref={canvasRef}  className="absolute inset-0 w-full h-full object-contain" />
                    
                     
                     
@@ -3483,6 +3598,9 @@ return (
 
 
 </div>
+
+
+
 
 
         </main>

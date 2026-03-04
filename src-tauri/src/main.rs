@@ -796,6 +796,8 @@ async fn get_video_frame(path: String, time_ms: f64) -> Result<String, String> {
     }
 }
 
+
+
 #[tauri::command]
 async fn extract_audio(project_path: String, file_name: String) -> Result<String, String> {
     let video_path = Path::new(&project_path).join("videos").join(&file_name);
