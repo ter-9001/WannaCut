@@ -17,7 +17,7 @@
 
 
 import { useState, useRef, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, number } from 'framer-motion';
 
 //Icons for the Render
 import { 
@@ -85,7 +85,10 @@ interface Clip {
   trackId: number;
   maxduration: number; // max size in the timeline at current position
   beginmoment: number; //begin of the clip in relation of all original clip (asset)
-  mute?: boolean
+  mute?: boolean;
+  fadein?: number;
+  fadeout?: number;
+
 }
 
 interface ProjectFileData {
@@ -706,7 +709,7 @@ const FPS_LIMIT = 1000 / 10; // 30 FPS (aprox 33ms)
 
 
 //Render main frame
-const drawFrame = async (time: number) => {
+const drawFrame_old = async (time: number) => {
     if (!canvasRef.current) return;
 
 
@@ -755,6 +758,80 @@ const drawFrame = async (time: number) => {
       console.error("Erro ao buscar frame:", err);
     }
   }
+
+const drawFrame = async (time: number) => {
+    if (!canvasRef.current) return;
+
+    const now = performance.now();
+    if (now - lastFrameTimeRef.current < FPS_LIMIT) 
+      return;
+    lastFrameTimeRef.current = now;
+      
+    const ctx = canvasRef.current.getContext('2d');
+
+    if (!topClip) {
+        if (ctx && canvasRef.current) {
+            ctx.fillStyle = "black";
+            ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        }
+        return;
+    }
+
+    // --- CÁLCULO DA OPACIDADE (FADE) ---
+    let opacity = 1.0;
+    const relativeTime = time - topClip.start; // Tempo decorrido dentro do clipe (segundos)
+    const fadeinDuration = topClip.fadein || 0;
+    const fadeoutDuration = topClip.fadeout || 0;
+
+    // Lógica de Fade In
+    if (relativeTime < fadeinDuration && fadeinDuration > 0) {
+        opacity = relativeTime / fadeinDuration;
+    } 
+    // Lógica de Fade Out
+    else if (relativeTime > (topClip.duration - fadeoutDuration) && fadeoutDuration > 0) {
+        const timeRemaining = topClip.duration - relativeTime;
+        opacity = timeRemaining / fadeoutDuration;
+    }
+
+    // Clamp para garantir que fique entre 0 e 1
+    opacity = Math.max(0, Math.min(1, opacity));
+
+    // Tempo para o Rust (milissegundos)
+    const clipTimeMs = (relativeTime + (topClip.beginmoment || 0)) * 1000;
+    const path = `${currentProjectPath}/videos/${topClip.name}`;
+
+    try {
+        const frameBase64: string = await invoke('get_video_frame', { 
+            path, 
+            timeMs: clipTimeMs 
+        });
+
+        const img = new Image();
+        img.onload = () => {
+            if (canvasRef.current && ctx) {
+                canvasRef.current.width = img.width;
+                canvasRef.current.height = img.height;
+
+                // 1. Limpa o canvas com preto (para o fade não sobrepor frames antigos)
+                ctx.fillStyle = "black";
+                ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+                // 2. Aplica a opacidade calculada
+                ctx.globalAlpha = opacity;
+                
+                // 3. Desenha o frame
+                ctx.drawImage(img, 0, 0);
+
+                // 4. Reseta o alpha para não afetar outros desenhos futuros
+                ctx.globalAlpha = 1.0;
+            }
+        };
+        img.src = frameBase64;
+         
+    } catch (err) {
+        console.error("Erro ao buscar frame:", err);
+    }
+};
 
 useEffect(() => {
   if (isPlaying) {
@@ -1365,6 +1442,8 @@ const handleUndo = () => {
 
   showNotify("Undo", "success");
 };
+
+
   const handleRedo = () => {
     if (redoStack.length === 0) return;
 
@@ -2602,6 +2681,51 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
     };
   }, []);
 
+  
+  // FADE HANDLE ENGINE
+
+  const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out') => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const startX = e.clientX;
+    const targetClip = clips.find(c => c.id === clipId);
+    if (!targetClip) return;
+
+    const initialFade = type === 'in' ? (targetClip.fadein || 0) : (targetClip.fadeout || 0);
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = (moveEvent.clientX - startX) / pixelsPerSecond; // Converte pixels para segundos
+      
+      setClips(prevClips => prevClips.map(clip => {
+        if (clip.id !== clipId) return clip;
+
+        let newValue;
+        if (type === 'in') {
+          // Fade In: aumenta conforme puxa para a direita
+          newValue = Math.max(0, Math.min(clip.duration / 2, initialFade + deltaX));
+          return { ...clip, fadein: newValue };
+        } else {
+          // Fade Out: aumenta conforme puxa para a esquerda
+          newValue = Math.max(0, Math.min(clip.duration / 2, initialFade - deltaX));
+          return { ...clip, fadeout: newValue };
+        }
+      }));
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      // Aqui você pode disparar um save no banco/rust se necessário
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
+
+
+
 
   // --- PROJECT METHODS ---
 
@@ -3334,11 +3458,18 @@ const PropertiesAside = () => {
             <span className="text-[10px] font-black uppercase tracking-widest">Transitions</span>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <PropertyRow label="Fade In" keyframable={false}>
-              <input type="text" placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+            <PropertyRow label="Fade In (s)" keyframable={false}>
+              <input type="text" 
+              value={selectedClip.fadein ? 
+                selectedClip.fadein : 0
+               } placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
             </PropertyRow>
-            <PropertyRow label="Fade Out" keyframable={false}>
-              <input type="text" placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+            <PropertyRow label="Fade Out (s)" keyframable={false}>
+              <input type="text" 
+              value={selectedClip.fadeout ? 
+                selectedClip.fadeout : 0
+               }
+               placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
             </PropertyRow>
           </div>
         </section>
@@ -4132,6 +4263,42 @@ return (
                   {clip.name}
                 </p>
               </div>
+
+              {/*FADE HANDLE */}
+
+              {/* Visual do Fade In (Triângulo) */}
+              {clip.fadein > 0 && (
+                <div 
+                  className="absolute top-0 left-0 h-full bg-black/30 pointer-events-none"
+                  style={{
+                    width: clip.fadein * pixelsPerSecond,
+                    clipPath: 'polygon(0 0, 100% 0, 0 100%)', // Cria o triângulo de fade
+                  }}
+                />
+              )}
+
+              {/* Visual do Fade Out (Triângulo) */}
+              {clip.fadeout > 0 && (
+                <div 
+                  className="absolute top-0 right-0 h-full bg-black/30 pointer-events-none"
+                  style={{
+                    width: clip.fadeout * pixelsPerSecond,
+                    clipPath: 'polygon(0 0, 100% 100%, 100% 0)',
+                  }}
+                />
+              )}
+
+              {/* Handle de Fade In (Canto Superior Esquerdo) */}
+              <div
+                className="absolute top-0 left-0 w-3 h-3 bg-white border border-black/50 rounded-bl-full cursor-ew-resize opacity-0 group-hover:opacity-100 z-30 hover:scale-125 transition-transform rotate-90"
+                onMouseDown={(e) => handleFadeDrag(e, clip.id, 'in')}
+              />
+
+              {/* Handle de Fade Out (Canto Superior Direito) */}
+              <div
+                className="absolute top-0 right-0 w-3 h-3 bg-white border border-black/50 rounded-br-full cursor-ew-resize opacity-0 group-hover:opacity-100 z-30 hover:scale-125 transition-transform rotate-270"
+                onMouseDown={(e) => handleFadeDrag(e, clip.id, 'out')}
+              />
 
               {/* Handles de Redimensionamento */}
               <div className="absolute left-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'left')} />

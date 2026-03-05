@@ -78,6 +78,9 @@ pub struct Clip {
     pub clip_type: String,
     #[serde(default)]
     pub mute: Option<bool>,
+    pub fadein: Option<f64>,
+    pub fadeout: Option<f64>
+
 }
 
 
@@ -209,16 +212,35 @@ fn build_rendering_filter(clips: &[Clip], total_duration: f64) -> String {
             } else {
                 // Videos use trim (internal cut) and setpoints (positioning on the timeline).
 
-    
-                //Apply volume filter to the audio stream of this input
-                /*filters.push(format!(
-                    "[{}:a]volume={}[a{}];", 
-                    i, volume, i
-                ));*/
+                let mut clip_filters = Vec::new();
+                    
+                    // --- Lógica de FADE IN ---
+                    if let Some(fi) = clip.fadein {
+                        if fi > 0.0 {
+                            // t=in: start_time é 0 (relativo ao início do clipe após o trim)
+                            clip_filters.push(format!("fade=t=in:st=0:d={}", fi));
+                        }
+                    }
+
+                    // --- Lógica de FADE OUT ---
+                    if let Some(fo) = clip.fadeout {
+                        if fo > 0.0 {
+                            // t=out: start_time é a duração total menos a duração do fade
+                            let start_fade_out = clip.duration - fo;
+                            clip_filters.push(format!("fade=t=out:st={}:d={}", start_fade_out, fo));
+                        }
+                    }
+
+                    // Aplica os filtros ao clipe (ex: [v0]fade...[v0_faded])
+                    let filter_str = if clip_filters.is_empty() {
+                        String::new()
+                    } else {
+                        format!(",{}", clip_filters.join(","))
+                    };
 
                 filters.push(format!(
-                    "[{}:v]trim=start={}:duration={},{},setpts=PTS-STARTPTS+{}/TB[v{}]",
-                    i, clip.beginmoment, clip.duration, centering_filter, clip.start, i
+                    "[{}:v]trim=start={}:duration={},{}{},setpts=PTS-STARTPTS+{}/TB[v{}]",
+                    i, clip.beginmoment, clip.duration, centering_filter,filter_str ,clip.start, i
                 ));
             }
             video_outputs.push((i, clip.start, clip.duration));
