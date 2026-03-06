@@ -88,6 +88,9 @@ interface Clip {
   mute?: boolean;
   fadein?: number;
   fadeout?: number;
+  fadeinAudio?: number;
+  fadeoutAudio?: number;
+
 
 }
 
@@ -650,6 +653,7 @@ const audioPlayersRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
 //Render all audios of the current time
 
+/*
 useEffect(() => {
   if (!topAudios || topAudios.length === 0 || !isPlaying) {
     audioPlayersRef.current.forEach(p => p.pause());
@@ -704,7 +708,86 @@ useEffect(() => {
 
 }, [topAudios, isPlaying]);
 
+*/
 
+useEffect(() => {
+  if (!topAudios || topAudios.length === 0 || !isPlaying) {
+    audioPlayersRef.current.forEach(p => {
+      p.pause();
+      p.volume = 0; // Reset de volume ao pausar
+    });
+    return;
+  }
+
+  const currentIds = new Set(topAudios.map(clip => clip.id));
+
+  // Limpeza de players antigos
+  audioPlayersRef.current.forEach((player, id) => {
+    if (!currentIds.has(id)) {
+      player.pause();
+      audioPlayersRef.current.delete(id);
+    }
+  });
+
+  // Loop principal de atualização dos players
+  topAudios.forEach(clip => {
+    let player = audioPlayersRef.current.get(clip.id);
+    
+    const audio = `${clip.name.split('.').slice(0, -1).join('.')}.mp3`;
+    const path = knowTypeByAssetName(clip.name) === 'video' 
+      ? `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/extracted_audios/${audio}`)}` 
+      : `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`;
+
+    if (!player) {
+      player = new Audio(path);
+      audioPlayersRef.current.set(clip.id, player);
+    }
+
+    const targetTime = (currentTimeRef.current - clip.start) + (clip.beginmoment || 0);
+
+    const applyFadeAndSync = () => {
+      
+      if (targetTime >= 0 && targetTime < player!.duration) {
+        player!.currentTime = targetTime;
+      }
+      
+      if (isPlaying) player!.play().catch(() => {});
+
+      // Fade logic
+      const updateVolume = () => {
+        if (!player || player.paused) return;
+
+        const relativeTime = player.currentTime - (clip.beginmoment || 0); // Tempo relativo ao início do recorte
+        const fadein = clip.fadeinAudio || 0;
+        const fadeout = clip.fadeoutAudio || 0;
+        let vol = 1.0;
+
+        // Cálculo de Fade In
+        if (relativeTime < fadein && fadein > 0) {
+          vol = relativeTime / fadein;
+        }
+        // Cálculo de Fade Out
+        else if (relativeTime > (clip.duration - fadeout) && fadeout > 0) {
+          const timeRemaining = clip.duration - relativeTime;
+          vol = timeRemaining / fadeout;
+        }
+
+        player.volume = Math.max(0, Math.min(1, vol));
+        
+        if (isPlaying) requestAnimationFrame(updateVolume);
+      };
+
+      updateVolume();
+    };
+
+    if (player.readyState >= 1) { 
+      applyFadeAndSync();
+    } else {
+      player.addEventListener('loadedmetadata', applyFadeAndSync, { once: true });
+    }
+  });
+
+}, [topAudios, isPlaying]);
 
 
 
@@ -2699,7 +2782,8 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
   
   // FADE HANDLE ENGINE
 
-  const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out') => {
+
+const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out', clip_type: string) => {
     e.stopPropagation();
     e.preventDefault();
 
@@ -2707,37 +2791,48 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
     const targetClip = clips.find(c => c.id === clipId);
     if (!targetClip) return;
 
-    const initialFade = type === 'in' ? (targetClip.fadein || 0) : (targetClip.fadeout || 0);
+    // 1. Determina quais são as propriedades corretas baseadas no tipo
+    const isAudio = clip_type === 'audio';
+    const propIn = isAudio ? 'fadeinAudio' : 'fadein';
+    const propOut = isAudio ? 'fadeoutAudio' : 'fadeout';
+    
+    // 2. Pega o valor inicial correto
+    const propertyToUpdate = type === 'in' ? propIn : propOut;
+    const initialFade = (targetClip[propertyToUpdate as keyof Clip] as number) || 0;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
-      const deltaX = (moveEvent.clientX - startX) / pixelsPerSecond; // Converte pixels para segundos
-      
-      setClips(prevClips => prevClips.map(clip => {
-        if (clip.id !== clipId) return clip;
+        // Converte o movimento do mouse em segundos (delta)
+        const deltaX = (moveEvent.clientX - startX) / pixelsPerSecond; 
+        
+        setClips(prevClips => prevClips.map(clip => {
+            if (clip.id !== clipId) return clip;
 
-        let newValue;
-        if (type === 'in') {
-          // Fade In: aumenta conforme puxa para a direita
-          newValue = Math.max(0, Math.min(clip.duration / 2, initialFade + deltaX));
-          return { ...clip, fadein: newValue };
-        } else {
-          // Fade Out: aumenta conforme puxa para a esquerda
-          newValue = Math.max(0, Math.min(clip.duration / 2, initialFade - deltaX));
-          return { ...clip, fadeout: newValue };
-        }
-      }));
+            let newValue: number;
+            
+            if (type === 'in') {
+                // Fade In: aumenta puxando para a direita
+                newValue = Math.max(0, Math.min(clip.duration / 2, initialFade + deltaX));
+            } else {
+                // Fade Out: aumenta puxando para a esquerda
+                newValue = Math.max(0, Math.min(clip.duration / 2, initialFade - deltaX));
+            }
+
+            // 3. Retorna o clipe com a propriedade dinâmica atualizada
+            return { 
+                ...clip, 
+                [propertyToUpdate]: newValue 
+            };
+        }));
     };
 
     const onMouseUp = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      // Aqui você pode disparar um save no banco/rust se necessário
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
     };
 
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
-  };
-
+};
 
 
 
@@ -2867,30 +2962,7 @@ const openProject = async (path: string) => {
     setTracks(parsed.tracks || []);
     setProjectName(parsed.projectName || "Unnamed Project");
 
-    /*
-    
-    // 1. Find the maximum track ID securely.
-    const maxTrackId = (parsed.clips || []).reduce((max, clip) => 
-      clip.trackId > max ? clip.trackId : max, 
-      0
-    );
-
-    // 2. Generate the array of tracks based on the {id, type} objects.
-    const newTracks = Array.from({ length: maxTrackId + 1 }, (_, id) => {
-      // Find the first clip of this track to determine the type.
-      const firstClip = parsed.clips.find(c => c.trackId === id);
-
-      // If the track has clips, it determines the type. If it's empty, it defaults to 'video'.
-      const trackType = firstClip 
-        ? (knowTypeByAssetName(firstClip.name, true) as 'video' | 'audio' | 'effects')
-        : 'video';
-
-      return { id, type: trackType };
-    });
-
-    setTracks(newTracks);
-    
-    */
+ 
     
     // Now allow saving
     setIsProjectLoaded(true); 
@@ -3473,9 +3545,11 @@ const PropertiesAside = () => {
             <Wind size={12} />
             <span className="text-[10px] font-black uppercase tracking-widest">Transitions</span>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          {
+            !isAudio && (
+            <div className="grid grid-cols-2 gap-2">
             <PropertyRow label="Fade In (s)" keyframable={false}>
-              <input type="text" 
+              <input type="number" 
               value={selectedClip.fadein ? 
                 selectedClip.fadein : 0
                }
@@ -3489,7 +3563,7 @@ const PropertiesAside = () => {
                placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
             </PropertyRow>
             <PropertyRow label="Fade Out (s)" keyframable={false}>
-              <input type="text" 
+              <input type="number" 
               value={selectedClip.fadeout ? 
                 selectedClip.fadeout : 0
                }
@@ -3505,6 +3579,44 @@ const PropertiesAside = () => {
                placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
             </PropertyRow>
           </div>
+          )
+          }
+
+
+          {
+          (isVideo || isAudio) && (<div className="grid grid-cols-2 gap-2">
+            <PropertyRow label="Fade In Audio (s)" keyframable={false}>
+              <input type="text" 
+              value={selectedClip.fadeinAudio ? 
+                selectedClip.fadeinAudio : 0
+               }
+               onChange={(e) => {
+                e.stopPropagation()
+                  const val = parseFloat(e.target.value) || 0;
+                  setClips(prev => prev.map((c) => 
+                    c.id === selectedClip.id ? { ...c, fadeinAudio: val } : c
+                  ));
+                }}
+               placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+            </PropertyRow>
+            <PropertyRow label="Fade Out Audio (s)" keyframable={false}>
+              <input type="number" 
+              value={selectedClip.fadeoutAudio ? 
+                selectedClip.fadeoutAudio : 0
+               }
+               onChange={(e) => {
+                e.stopPropagation()
+                  const val = parseFloat(e.target.value) || 0;
+                  setClips(prev => prev.map((c) => 
+                    c.id === selectedClip.id ? { ...c, fadeoutAudio: val } : c
+                  ));
+                }}
+
+
+               placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+            </PropertyRow>
+          </div>)
+          }
         </section>
 
         {/* SECTION: BLEND & MASK */}
@@ -4211,7 +4323,8 @@ return (
 
             const cacheKey = `${clip.id}-${clip.beginmoment}-${clip.duration}`;
             const thumbs = timelineThumbs[cacheKey];
-            const assetTarget = assets.find( a => a.name === clip.name)
+            const assetTarget = assets.find( a => a.name === clip.name) || null
+            if(!assetTarget) return
             const isVideo = (assetTarget?.type  === 'video')
             
             let margintitle = pixelsPerSecond > 30 ? -15 : -15
@@ -4219,6 +4332,10 @@ return (
 
 
             margintitle = pixelsPerSecond > 50 ? 30 : margintitle
+            const isAudioOnly = assetTarget.type === 'audio';
+            const currentFadeIn = isAudioOnly ? (clip.fadeinAudio || 0) : (clip.fadein || 0);
+            const currentFadeOut = isAudioOnly ? (clip.fadeoutAudio || 0) : (clip.fadeout || 0);
+
 
 
 
@@ -4299,39 +4416,41 @@ return (
 
               {/*FADE HANDLE */}
 
-              {/* Visual do Fade In (Triângulo) */}
-              {clip.fadein > 0 && (
-                <div 
-                  className="absolute top-0 left-0 h-full bg-black/30 pointer-events-none"
-                  style={{
-                    width: clip.fadein * pixelsPerSecond,
-                    clipPath: 'polygon(0 0, 100% 0, 0 100%)', // Cria o triângulo de fade
-                  }}
+              {/* Lógica para decidir qual valor ler */}
+
+                {/* Visual do Fade In (Triângulo) */}
+                {currentFadeIn > 0 && (
+                  <div 
+                    className="absolute top-0 left-0 h-full bg-black/40 pointer-events-none"
+                    style={{
+                      width: currentFadeIn * pixelsPerSecond,
+                      clipPath: 'polygon(0 0, 100% 0, 0 100%)',
+                    }}
+                  />
+                )}
+
+                {/* Visual do Fade Out (Triângulo) */}
+                {currentFadeOut > 0 && (
+                  <div 
+                    className="absolute top-0 right-0 h-full bg-black/40 pointer-events-none"
+                    style={{
+                      width: currentFadeOut * pixelsPerSecond,
+                      clipPath: 'polygon(0 0, 100% 100%, 100% 0)',
+                    }}
+                  />
+                )}
+
+                {/* Handle de Fade In */}
+                <div
+                  className="absolute top-0 left-0 w-3 h-3 bg-white border border-black/50 rounded-bl-full cursor-ew-resize opacity-0 group-hover:opacity-100 z-30 hover:scale-125 transition-transform rotate-90"
+                  onMouseDown={(e) => handleFadeDrag(e, clip.id, 'in', assetTarget?.type)}
                 />
-              )}
 
-              {/* Visual do Fade Out (Triângulo) */}
-              {clip.fadeout > 0 && (
-                <div 
-                  className="absolute top-0 right-0 h-full bg-black/30 pointer-events-none"
-                  style={{
-                    width: clip.fadeout * pixelsPerSecond,
-                    clipPath: 'polygon(0 0, 100% 100%, 100% 0)',
-                  }}
+                {/* Handle de Fade Out */}
+                <div
+                  className="absolute top-0 right-0 w-3 h-3 bg-white border border-black/50 rounded-br-full cursor-ew-resize opacity-0 group-hover:opacity-100 z-30 hover:scale-125 transition-transform rotate-270"
+                  onMouseDown={(e) => handleFadeDrag(e, clip.id, 'out', assetTarget?.type)}
                 />
-              )}
-
-              {/* Handle de Fade In (Canto Superior Esquerdo) */}
-              <div
-                className="absolute top-0 left-0 w-3 h-3 bg-white border border-black/50 rounded-bl-full cursor-ew-resize opacity-0 group-hover:opacity-100 z-30 hover:scale-125 transition-transform rotate-90"
-                onMouseDown={(e) => handleFadeDrag(e, clip.id, 'in')}
-              />
-
-              {/* Handle de Fade Out (Canto Superior Direito) */}
-              <div
-                className="absolute top-0 right-0 w-3 h-3 bg-white border border-black/50 rounded-br-full cursor-ew-resize opacity-0 group-hover:opacity-100 z-30 hover:scale-125 transition-transform rotate-270"
-                onMouseDown={(e) => handleFadeDrag(e, clip.id, 'out')}
-              />
 
               {/* Handles de Redimensionamento */}
               <div className="absolute left-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'left')} />
