@@ -83,6 +83,8 @@ def export_video():
             # e centraliza (o MoviePy centraliza por padrão no CompositeVideoClip se definido o size)
             fadein = 0
             fadeout = 0
+            fadeinAudio = 0
+            fadeoutAudio = 0
             
             if(c.get("fadein")):
                 fadein = int(c.get("fadein"))
@@ -90,8 +92,61 @@ def export_video():
             if(c.get("fadeout")):
                 fadeout = int(c.get("fadeout"))
 
+            if(c.get("fadeoutAudio")):
+                fadeinAudio = int(c.get("fadeoutAudio"))
 
-            clip = clip.with_effects([vfx.FadeIn(fadein), vfx.FadeOut(fadeout)])
+            if(c.get("fadeoutAudio")):
+                fadeoutAudio = int(c.get("fadeoutAudio"))
+
+
+
+
+
+
+            # put all fadein and out on video and audio
+            clip = clip.with_effects([vfx.FadeIn(fadein), vfx.FadeOut(fadeout), 
+            afx.AudioFadeIn(fadeinAudio), afx.AudioFadeOut(fadeoutAudio)])
+
+
+            op_kfs = c.get('keyframes', {}).get('opacity', [])
+
+            if op_kfs:
+                op_kfs = sorted(op_kfs, key=lambda x: x['time'])
+                
+                times = [kf['time'] for kf in op_kfs]
+                values = [kf['value'] for kf in op_kfs]
+
+                def opacity_keyframes_factory(get_frame, t):
+                    frame = get_frame(t)
+                    current_opacity = np.interp(t, times, values)
+                    return (frame * current_opacity).astype('uint8')
+                clip = clip.transform(opacity_keyframes_factory)
+            
+            op_vol = c.get('keyframes', {}).get('volume', [])
+
+            if (c.get('type') != 'image') and op_vol and clip.audio is not None:
+                op_vol = sorted(op_vol, key=lambda x: x['time'])
+                vol_times = [kf['time'] for kf in op_vol]
+                vol_values = [kf['value'] for kf in op_vol] # Valores de 0 a 1
+
+                def volume_db_keyframes(get_frame, t):
+                    chunk = get_frame(t)  # Formato: (amostras, 2) para Stereo
+                    
+                    # 1. Interpola o valor (0 a 1)
+                    val_0_to_1 = np.interp(t, vol_times, vol_values)
+                    
+                    # 2. Mapeia para a escala de dB e converte para Ganho Linear
+                    db_target = -30 + (val_0_to_1 * 60)
+                    gain = 10 ** (db_target / 20)
+                    
+                    # CORREÇÃO DO ERRO DE BROADCAST:
+                    # Multiplicamos o chunk pelo escalar. O NumPy deve lidar com isso, 
+                    # mas para ser explícito e evitar o erro de shape:
+                    gain_array = gain[:, np.newaxis] 
+                    return chunk * gain_array
+                # Aplicamos especificamente no objeto de áudio
+                clip.audio = clip.audio.transform(volume_db_keyframes)
+            
                 
 
             clip = clip.resized(height=target_size[1]) # Ajusta pela altura

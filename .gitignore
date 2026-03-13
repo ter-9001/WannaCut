@@ -9,6 +9,7 @@ lerna-debug.log*
 /src-tauri/bin/build/*
 /src-tauri/bin/dist/*
 /src-tauri/bin/venv_export/*
+/src-tauri/bin/exporter-x86_64-unknown-linux-gnu
 
 node_modules
 dist
