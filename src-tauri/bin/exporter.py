@@ -132,19 +132,13 @@ def export_video():
                 def volume_db_keyframes(get_frame, t):
                     chunk = get_frame(t)  # Formato: (amostras, 2) para Stereo
                     
-                    # 1. Interpola o valor (0 a 1)
                     val_0_to_1 = np.interp(t, vol_times, vol_values)
                     
-                    # 2. Mapeia para a escala de dB e converte para Ganho Linear
                     db_target = -30 + (val_0_to_1 * 60)
                     gain = 10 ** (db_target / 20)
                     
-                    # CORREÇÃO DO ERRO DE BROADCAST:
-                    # Multiplicamos o chunk pelo escalar. O NumPy deve lidar com isso, 
-                    # mas para ser explícito e evitar o erro de shape:
                     gain_array = gain[:, np.newaxis] 
                     return chunk * gain_array
-                # Aplicamos especificamente no objeto de áudio
                 clip.audio = clip.audio.transform(volume_db_keyframes)
             
                 

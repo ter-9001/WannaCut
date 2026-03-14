@@ -56,7 +56,8 @@ import {
   MicOffIcon,
   LockIcon,
   EyeOff,
-  BrushCleaning
+  BrushCleaning,
+  DiamondPlus
   
 } from 'lucide-react';
 
@@ -561,70 +562,6 @@ const startExport = async () => {
 
 
 
-const startExport_Old = async () => {
-  // 1. Trigger the export command
-
-  setRenderPercent(0)
-  if(clips.length == 0 || !clips )
-  {
-    
-    showNotify('There is no clips','error')
-    return
-  } 
-
- if(!currentProjectPath)
-     return
-
-  const safeName = currentProjectPath.replace(/[^a-z0-0]/gi, '_').toLowerCase();
-
-  const targetPath = await save({
-    title: 'Export Final Video',
-    filters: [{
-      name: 'Video',
-      extensions: ['mp4']
-    }],
-    defaultPath: `${safeName}.mp4`
-  });
-
-  // If the user cancels the dialog, targetPath will be null
-  if (!targetPath) return;
-
-  setRenderStatus('rendering');
-
-  const sanitizeNumber = (num: number): number => {
-  return Math.round(num * 100) / 100;
-};
-
-  const clips_format = clips.map( c => { return {
-    ...c,path: `${currentProjectPath}/videos/${c.name}` ,
-    trackId: c.trackId.toString(),
-     type: knowTypeByAssetName(c.name),
-      mute: c.mute ?? false,
-      beginmoment: sanitizeNumber(c.beginmoment),
-  duration: sanitizeNumber(c.duration),
-  start: sanitizeNumber(c.start)
-    }})
-
-      console.log('cf lalala ', clips_format)
-  
-  console.log( clips_format.map(c => c.path) )
-
-  try {
-    // Call the backend pipeline
-    await invoke('export_video', {
-      projectPath: currentProjectPath,
-      exportPath: targetPath, // Selected via dialog.save()
-      clips: clips_format
-    });
-    
-    setRenderStatus('success');
-  } catch (err) {
-    console.error("Export Error:", err);
-    setRenderStatus('idle');
-  }
-};
-
-
 //code to video preview
 
 
@@ -823,13 +760,13 @@ useEffect(() => {
         }
 
         // 2. Cálculo do Keyframe (Convertendo dB para Linear)
-        const kfValue = getInterpolatedValue(relativeTime, clip.keyframes?.volume || []);
+        const kfValue = getInterpolatedValueWithFades(currentTimeRef.current, clip, 'volume');
         const kfLinear = keyframeToLinear(kfValue);
 
         // 3. Volume Final
         // Como o player.volume morre em 1.0, limitamos aqui para o preview não quebrar.
         // No Export (FFmpeg), o valor kfLinear completo será usado.
-        const combinedVol = fadeVol * kfLinear;
+        const combinedVol = kfLinear;
         player.volume = Math.max(0, Math.min(1, combinedVol));
         
         if (isPlaying) requestAnimationFrame(updateVolume);
@@ -851,6 +788,8 @@ useEffect(() => {
 
 const getInterpolatedValue = (time: number, keyframes: Keyframe[]): number => {
   // 1. Se não houver keyframes, retorna o valor padrão (meio da escala = 0dB)
+
+  console.log('keys', keyframes)
   if (!keyframes || keyframes.length === 0) return 0.5;
 
   // 2. Garante que estão ordenados por tempo (importante para a busca)
@@ -867,6 +806,8 @@ const getInterpolatedValue = (time: number, keyframes: Keyframe[]): number => {
     const startKf = sorted[i];
     const endKf = sorted[i + 1];
 
+    console.log('middle', startKf, endKf)
+
     if (time >= startKf.time && time <= endKf.time) {
       // Cálculo de Interpolação Linear (LERP)
       // Descobre a porcentagem do progresso entre o ponto A e o ponto B
@@ -880,6 +821,69 @@ const getInterpolatedValue = (time: number, keyframes: Keyframe[]): number => {
   }
 
   return 0.5;
+};
+
+const getInterpolatedValueWithFades = (
+  timeFull: number, 
+  clip: any, 
+  type: 'opacity' | 'volume'
+): number => {
+  // 1. Identificar quais campos de fade usar baseado no tipo
+  const isVideo = type === 'opacity';
+  const kfArray = isVideo ? clip.keyframes?.opacity : clip.keyframes?.volume;
+
+  const time = timeFull - clip.start; // Tempo decorrido dentro do clipe (segundos)
+
+  
+  // Tempos de fade (relativos ao início do clip, onde time 0 é o começo do clip)
+  const fadeInDuration = isVideo ? (clip.fadein || 0) : (clip.fadeinAudio || 0);
+  const fadeOutDuration = isVideo ? (clip.fadeout || 0) : (clip.fadeoutAudio || 0);
+  
+  // 2. Calcular o Valor Base via Interpolação (sua lógica original)
+  let baseValue = 1.0; // Valor padrão caso não haja keyframes
+
+  if (kfArray && kfArray.length > 0) {
+    const sorted = [...kfArray].sort((a, b) => a.time - b.time);
+
+    if (time <= sorted[0].time) {
+      baseValue = sorted[0].value;
+    } else if (time >= sorted[sorted.length - 1].time) {
+      baseValue = sorted[sorted.length - 1].value;
+    } else {
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const startKf = sorted[i];
+        const endKf = sorted[i + 1];
+        if (time >= startKf.time && time <= endKf.time) {
+          const rangeTime = endKf.time - startKf.time;
+          const progress = (time - startKf.time) / rangeTime;
+          baseValue = startKf.value + progress * (endKf.value - startKf.value);
+          break;
+        }
+      }
+    }
+  } else {
+    // Se não houver keyframes, o padrão costuma ser 1.0 (total) ou 0.5 conforme seu código
+    baseValue = 0.5; 
+  }
+
+  // 3. Aplicar Modificadores de Fade
+  let fadeModifier = 1.0;
+
+  // Fade In (Início do clip)
+  if (time < fadeInDuration && fadeInDuration > 0) {
+    fadeModifier = time / fadeInDuration;
+  } 
+  // Fade Out (Fim do clip)
+  else if (time > (clip.duration - fadeOutDuration) && fadeOutDuration > 0) {
+    const timeInFadeOut = time - (clip.duration - fadeOutDuration);
+    fadeModifier = 1.0 - (timeInFadeOut / fadeOutDuration);
+  }
+
+  // Garante que o modifier não saia do range 0-1 por erro de precisão
+  fadeModifier = Math.max(0, Math.min(1, fadeModifier));
+
+  // 4. Retorno Final: O valor do keyframe multiplicado pelo efeito de Fade
+  return baseValue * fadeModifier;
 };
 
 useEffect(() => {
@@ -951,6 +955,7 @@ const drawFrame = async (time: number) => {
     const fadeoutDuration = topClip.fadeout || 0;
 
     // Lógica de Fade In
+   /*
     if (relativeTime < fadeinDuration && fadeinDuration > 0) {
         opacity = relativeTime / fadeinDuration;
     } 
@@ -964,8 +969,9 @@ const drawFrame = async (time: number) => {
     opacity = Math.max(0, Math.min(1, opacity));
 
     //if has a keyframe the value are multiplied
+   */
 
-    opacity = getOpacityAtTime(topClip);
+    opacity = getInterpolatedValueWithFades(time, topClip, 'opacity')
 
     console.log('opacity', opacity)
     console.log('clip now frame', topClip.keyframes?.opacity)
@@ -2076,7 +2082,6 @@ useEffect(() => {
     if (e.key.toLowerCase() === 'i') setInPoint(time);
     if (e.key.toLowerCase() === 'o') setOutPoint(time);
 
-    console.log('set to', time)
   };
 
   window.addEventListener('keydown', handleKeyDown);
@@ -2411,12 +2416,17 @@ const canvasRef2 = useRef<HTMLCanvasElement>(null);
 
 
 
-    const togglePlay2 = async () => {
+    const togglePlay2 =  () => {
   if (!audioRef2.current) return;
+
+  console.log('entrou')
 
   try {
     if (audioRef2.current.paused) {
-      await audioRef2.current.play();
+      audioRef2.current.volume = 1;
+
+      audioRef2.current.play();
+      console.log('audio played')
       setIsPlaying2(true);
     } else {
       audioRef2.current.pause();
@@ -2439,6 +2449,8 @@ const canvasRef2 = useRef<HTMLCanvasElement>(null);
       `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${sourceAsset.name}`)}`
 
 
+
+      console.log('path audio', path)
       audioRef2.current.src = path
             
 
@@ -3476,7 +3488,7 @@ const handleImportFile = async () => {
   //elements for aside of config clips
 
   // Subcomponent for inputs with Keyframe icon
-const PropertyRow = ({ label, children, keyframable = true, activeColor = "#4f46e5" }) => (
+const PropertyRow = ({ label, children, keyframable = true, activeColor = "#4f46e5", keyframeNow = false }) => (
   <div className="flex flex-col gap-2 mb-4">
     <div className="flex justify-between items-center">
       <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-tighter">{label}</label>
@@ -3487,7 +3499,7 @@ const PropertyRow = ({ label, children, keyframable = true, activeColor = "#4f46
           onMouseEnter={(e) => e.currentTarget.style.color = activeColor}
           onMouseLeave={(e) => e.currentTarget.style.color = `${activeColor}80`}
         >
-          <Diamond size={10} />
+          {keyframeNow ? (<DiamondPlus size={10} />) : (<Diamond size={10} />)}
         </button>
       )}
     </div>
@@ -3519,6 +3531,22 @@ const PropertiesAside = () => {
   const isVideo = selectedClip.type === "video" || selectedClip.path?.endsWith(".mp4");
   const isAudio = selectedClip.type === "audio" || selectedClip.path?.endsWith(".mp3") || selectedClip.path?.endsWith(".wav");
   const isText = selectedClip.type === "text";
+
+
+  const volumeKeyframesTime = selectedClip.keyframes.volume.map(kf => kf.time);
+  const opacityKeyframesTime = selectedClip.keyframes.opacity.map(kf => kf.time);
+
+
+
+  const volumeKeyframeNow  = volumeKeyframesTime.some(kfTime => 
+       Math.abs(kfTime - (currentTimeRef.current- selectedClip.start)) <= 0.05
+  );
+
+  const opacityKeyframeNow  = opacityKeyframesTime.some(kfTime => 
+       Math.abs(kfTime - (currentTimeRef.current - selectedClip.start)) <= 0.05
+  );
+
+
 
   return (
     <aside className="w-72 bg-[#090909] border-l border-white/5 flex flex-col h-full overflow-hidden animate-in slide-in-from-right duration-300"
@@ -3584,22 +3612,42 @@ const PropertiesAside = () => {
             </>
           )}
 
-          {isAudio && (
-            <PropertyRow label="Volume" activeColor={activeHex}>
+          {(isAudio || isVideo) && (
+            <PropertyRow label="Volume" activeColor={activeHex} keyframeNow={volumeKeyframeNow}>
               <input 
-                type="range" 
+                type="range"
+                step="0.001" 
                 className="w-full cursor-pointer" 
-                style={{ accentColor: activeHex }} 
+                style={{ accentColor: activeHex }}
+                onInput ={ (e) =>  {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    updateKeyframes(selectedClip, 'volume', e.target.value)
+                  }} 
+                min={0}
+                max={1}
+                value={getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'volume')}
               />
             </PropertyRow>
           )}
 
           {(isVideo || isText) && (
-            <PropertyRow label="Opacity" activeColor={activeHex}>
+            <PropertyRow label="Opacity" activeColor={activeHex} keyframeNow={opacityKeyframeNow}>
               <input 
                 type="range" 
-                className="w-full cursor-pointer" 
+                 step="0.001"
+                className="w-full cursor-pointer border-gray-300" 
                 style={{ accentColor: activeHex }} 
+                onInput ={ (e) => 
+                  {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    updateKeyframes(selectedClip, 'opacity', e.target.value)
+                  }} 
+                min={0}
+                max={1}
+                value={getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'opacity')}
+
               />
             </PropertyRow>
           )}
@@ -3728,6 +3776,54 @@ const PropertiesAside = () => {
 };
 
 //Keyframes System
+const updateKeyframes = (clip: Clip, type: 'opacity' | 'volume', value: string) => {
+  
+  const newValue = parseFloat(value);
+  const threshold = 0.05 
+  
+  const relativeTime = currentTimeRef.current - clip.start;
+
+  // 1. Verificar se já existe um keyframe dentro do threshold
+  const existingIndex = clip.keyframes[type].findIndex(
+    (kf) => Math.abs(kf.time -  relativeTime
+    ) <= threshold
+  );
+
+  let updatedTypeArray;
+
+  if (existingIndex !== -1) {
+    // CASO 1: Encontrou um keyframe próximo -> Atualiza o valor
+    updatedTypeArray = clip.keyframes[type].map((kf, index) =>
+      index === existingIndex ? { ...kf, value: newValue } : kf
+    );
+  } else {
+    // CASO 2: Não encontrou -> Cria um novo keyframe
+    const newKeyframe = {
+      id: crypto.randomUUID(), // Gera um ID único para o novo ponto
+      time:  relativeTime,
+      value: newValue,
+    };
+    
+    // Adiciona e mantém o array ordenado por tempo para não quebrar a interpolação
+    updatedTypeArray = [...clip.keyframes[type], newKeyframe].sort(
+      (a, b) => a.time - b.time
+    );
+  }
+
+  const updatedKeyframes = {
+    ...clip.keyframes,
+    [type]: updatedTypeArray,
+  };
+
+  // Atualiza o estado global dos clips
+  setClips((prev) =>
+    prev.map((c) =>
+      c.id === clip.id ? { ...c, keyframes: updatedKeyframes } : c
+    )
+  );
+};
+
+
 const addKeyframe = (e: React.MouseEvent, clipId: string) => {
   const clip = clips.find(c => c.id === clipId);
   // Só adiciona se houver uma visão de keyframe ativa (ex: 'volume')
@@ -3781,8 +3877,6 @@ const handleKeyframeDrag = (
   kfId: string, 
   view: 'volume' | 'opacity' | 'speed' | 'rotation3d'
 ) => {
-  e.stopPropagation();
-  e.preventDefault();
 
   const onMouseMove = (moveEvent: MouseEvent) => {
     const clipElement = document.getElementById(`clip-${clipId}`);
@@ -4639,7 +4733,7 @@ return (
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   
-                                  // ATIVA A VISÃO GRÁFICA NO CLIPE
+                                  // View Keyframes
                                   setClips(prev => prev.map(c => 
                                     c.id === contextMenu.clip.id 
                                       ? { ...c, activeKeyframeView: sub.value as any } 
@@ -4728,14 +4822,24 @@ return (
                     fill="white"
                     stroke="#7c3aed"
                     strokeWidth="2"
-                    className="cursor-move hover:scale-150 transition-transform pointer-events-auto"
-                    onMouseDown={(e) => handleKeyframeDrag(e, clip.id, kf.id, clip.activeKeyframeView!)}
+                    //hover:scale-150 
+                    className="cursor-move transition-transform pointer-events-auto"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleKeyframeDrag(e, clip.id, kf.id, clip.activeKeyframeView!);
+                    }}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
                       deleteKeyframe(clip.id, kf.id, clip.activeKeyframeView!);
                     }}
-                  />
+                    
+                  >
+
+                    <title> {kf.value} </title>
+
+                  </circle>  
                 ))}
               </svg>
               
