@@ -94,6 +94,7 @@ interface Clip {
   trackId: number;
   maxduration: number; // max size in the timeline at current position
   beginmoment: number; //begin of the clip in relation of all original clip (asset)
+  originalduration: number;
   mute?: boolean;
   fadein?: number;
   fadeout?: number;
@@ -105,6 +106,7 @@ interface Clip {
   speed?: Keyframe[];
   rotation3d?: Keyframe[];
 };
+  
 
 
 activeKeyframeView?: 'volume' | 'opacity' | 'speed' | 'rotation3d' | null;
@@ -345,6 +347,8 @@ useEffect(() => {
     unlisten.then(f => f());
   };
 }, []);
+
+
 
 
 
@@ -826,7 +830,7 @@ const getInterpolatedValue = (time: number, keyframes: Keyframe[]): number => {
 const getInterpolatedValueWithFades = (
   timeFull: number, 
   clip: any, 
-  type: 'opacity' | 'volume'
+  type: 'opacity' | 'volume' | 'speed'
 ): number => {
   // 1. Identificar quais campos de fade usar baseado no tipo
   const isVideo = type === 'opacity';
@@ -934,6 +938,109 @@ const drawFrame = async (time: number) => {
     if (!canvasRef.current) return;
 
     const now = performance.now();
+    if (now - lastFrameTimeRef.current < FPS_LIMIT) return;
+    lastFrameTimeRef.current = now;
+      
+    const ctx = canvasRef.current.getContext('2d');
+
+    if (!topClip) {
+        if (ctx && canvasRef.current) {
+            ctx.fillStyle = "black";
+            ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        }
+        return;
+    }
+
+    // 1. TEMPO RELATIVO NA TIMELINE
+    const timelineRelativeTime = time - topClip.start;
+
+    // 2. CÁLCULO DO ASSET TIME (A "MÁGICA" DO SPEED RAMP)
+    // Precisamos saber em qual segundo do VÍDEO ORIGINAL estamos.
+    let assetRelativeTime = timelineRelativeTime;
+
+    if (topClip.keyframes?.speed && topClip.keyframes.speed.length > 0) {
+        const speedKfs = [...topClip.keyframes.speed].sort((a, b) => a.time - b.time);
+        
+        let accumulatedAssetTime = 0;
+        let lastTimelineTime = 0;
+        let lastSpeed = speedKfs[0].value;
+
+        // Calculamos a integral da velocidade até o timelineRelativeTime atual
+        for (let i = 0; i < speedKfs.length; i++) {
+            const kf = speedKfs[i];
+            
+            if (timelineRelativeTime > kf.time) {
+                // Trecho completo entre o último ponto e este
+                const segmentDuration = kf.time - lastTimelineTime;
+                const avgSpeed = (lastSpeed + kf.value) / 2;
+                accumulatedAssetTime += segmentDuration * avgSpeed;
+                
+                lastTimelineTime = kf.time;
+                lastSpeed = kf.value;
+            } else {
+                // Trecho parcial entre o último ponto e o tempo atual do player
+                const segmentDuration = timelineRelativeTime - lastTimelineTime;
+                
+                // Interpolação linear da velocidade no ponto exato do player
+                const t = segmentDuration / (kf.time - lastTimelineTime || 1);
+                const currentSpeed = lastSpeed + t * (kf.value - lastSpeed);
+                const avgSpeed = (lastSpeed + currentSpeed) / 2;
+                
+                accumulatedAssetTime += segmentDuration * avgSpeed;
+                lastTimelineTime = timelineRelativeTime;
+                break;
+            }
+        }
+
+        // Caso o player esteja depois do último keyframe de velocidade
+        if (timelineRelativeTime > lastTimelineTime) {
+            accumulatedAssetTime += (timelineRelativeTime - lastTimelineTime) * lastSpeed;
+        }
+
+        assetRelativeTime = accumulatedAssetTime;
+    }
+
+    // 3. CÁLCULO DA OPACIDADE
+    // Importante: Passamos o timelineRelativeTime pois os keyframes de 
+    // opacidade já foram sincronizados para a posição da timeline.
+    const opacity = getInterpolatedValueWithFades(timelineRelativeTime, topClip, 'opacity');
+
+    // 4. TEMPO PARA O RUST (milissegundos)
+    // Usamos o assetRelativeTime que reflete a distorção da velocidade
+    const clipTimeMs = (assetRelativeTime + (topClip.beginmoment || 0)) * 1000;
+    const path = `${currentProjectPath}/videos/${topClip.name}`;
+
+    try {
+        const frameBase64: string = await invoke('get_video_frame', { 
+            path, 
+            timeMs: clipTimeMs 
+        });
+
+        const img = new Image();
+        img.onload = () => {
+            if (canvasRef.current && ctx) {
+                canvasRef.current.width = img.width;
+                canvasRef.current.height = img.height;
+
+                ctx.fillStyle = "black";
+                ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+                ctx.globalAlpha = opacity;
+                ctx.drawImage(img, 0, 0);
+                ctx.globalAlpha = 1.0;
+            }
+        };
+        img.src = frameBase64;
+         
+    } catch (err) {
+        console.error("Erro ao buscar frame:", err);
+    }
+};
+
+const drawFrame_old = async (time: number) => {
+    if (!canvasRef.current) return;
+
+    const now = performance.now();
     if (now - lastFrameTimeRef.current < FPS_LIMIT) 
       return;
     lastFrameTimeRef.current = now;
@@ -1012,6 +1119,8 @@ const drawFrame = async (time: number) => {
         console.error("Erro ao buscar frame:", err);
     }
 };
+
+
 
 useEffect(() => {
   if (isPlaying) {
@@ -1738,6 +1847,8 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
     const asset = assets.find(a => a.name === clip.name);
     const isImage = asset?.type === 'image';
 
+    const noKeyframesSpeed = (!clip.keyframes?.speed) || (clip.keyframes?.speed?.length == 0)
+
     if (side === 'right') {
       // If it's an image, the limit is only the next clip. If it's video, it's the end of the file.
       const remainingAssetTime = isImage ? Infinity : (clip.maxduration - (clip.beginmoment + clip.duration));
@@ -1752,7 +1863,9 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
       
       return { 
         ...clip, 
-        duration: clip.duration + addedDuration 
+        duration: clip.duration + addedDuration,
+        originalduration: noKeyframesSpeed ? clip.duration + addedDuration : clip.originalduration
+
       };
 
     } else {
@@ -1772,7 +1885,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
         ...clip,
         start: clip.start + safeDelta,
         duration: clip.duration - safeDelta,
-        // Images don't progress in "internal time", so beginmoment only changes for videos
+        originalduration: noKeyframesSpeed ? clip.duration - safeDelta : clip.originalduration,
         beginmoment: isImage ? 0 : clip.beginmoment + safeDelta
       };
     }
@@ -1793,7 +1906,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
       const deltaX = moveEvent.clientX - startX;
       
       // Call the resize handler
-      handleResize(clipId, deltaX, side);
+      handleResize(clipId, deltaX * 0.2, side);
     };
 
     const onMouseUp = () => {
@@ -2496,7 +2609,7 @@ const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) =>
 }
 
 
-const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginmoment: number|null = null) => {
+const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginmoment: number|null = null, originalduration: number = 10) => {
     
   
   var meta;
@@ -2544,6 +2657,7 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
             name: assetName,
             start: dropTime,
             duration: deleteClip ? deleteClip.duration : 10,
+            originalduration: originalduration,
             color: getRandomColor(),
             trackId: newTrackId,
             maxduration: duration,
@@ -3292,6 +3406,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
             name: droppedClip.name,
             start: dropTime,
             duration: droppedClip.duration,
+            originalduration: droppedClip.duration,
             color: getRandomColor(),
             trackId: trackId,
             maxduration: totalMaxDuration,
@@ -3320,7 +3435,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   const assetName = e.dataTransfer.getData("assetName");
 
 
-  saveHistory(clips, assets);
+  saveHistory(clips, assets, tracks);
 
   if (isTimelineClip && selectedClipIds.length > 0) {
   const timeOffset = dropTime - anchorStart;
@@ -3401,6 +3516,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
           name: assetName,
           start: dropTime,
           duration: defaultDuration,
+          originalduration: defaultDuration,
           color: getRandomColor(),
           trackId: trackId,
           maxduration: totalMaxDuration,
@@ -3499,7 +3615,7 @@ const PropertyRow = ({ label, children, keyframable = true, activeColor = "#4f46
           onMouseEnter={(e) => e.currentTarget.style.color = activeColor}
           onMouseLeave={(e) => e.currentTarget.style.color = `${activeColor}80`}
         >
-          {keyframeNow ? (<DiamondPlus size={10} />) : (<Diamond size={10} />)}
+          {keyframeNow ? (<DiamondPlus color='red' size={10} />) : (<Diamond size={10} />)}
         </button>
       )}
     </div>
@@ -3533,18 +3649,23 @@ const PropertiesAside = () => {
   const isText = selectedClip.type === "text";
 
 
-  const volumeKeyframesTime = selectedClip.keyframes.volume.map(kf => kf.time);
-  const opacityKeyframesTime = selectedClip.keyframes.opacity.map(kf => kf.time);
+  const volumeKeyframesTime = selectedClip.keyframes?.volume?.map(kf => kf.time) || null;
+  const opacityKeyframesTime = selectedClip.keyframes?.opacity?.map(kf => kf.time) || null;
+  const speedKeyframesTime = selectedClip.keyframes?.speed?.map(kf => kf.time) || null;
 
 
 
-  const volumeKeyframeNow  = volumeKeyframesTime.some(kfTime => 
+  const volumeKeyframeNow  = volumeKeyframesTime?.some(kfTime => 
        Math.abs(kfTime - (currentTimeRef.current- selectedClip.start)) <= 0.05
-  );
+  ) || false;
 
-  const opacityKeyframeNow  = opacityKeyframesTime.some(kfTime => 
+  const opacityKeyframeNow  = opacityKeyframesTime?.some(kfTime => 
        Math.abs(kfTime - (currentTimeRef.current - selectedClip.start)) <= 0.05
-  );
+  )|| false;
+
+  const speedKeyframeNow  = speedKeyframesTime?.some(kfTime => 
+       Math.abs(kfTime - (currentTimeRef.current - selectedClip.start)) <= 0.05
+  )|| false;
 
 
 
@@ -3652,8 +3773,15 @@ const PropertiesAside = () => {
             </PropertyRow>
           )}
           
-          <PropertyRow label="Speed" activeColor={activeHex}>
-            <input type="number" step="0.1" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white w-full outline-none focus:border-white/20" />
+          <PropertyRow label="Speed" activeColor={activeHex} keyframeNow={speedKeyframeNow}>
+            <input type="range" step="0.1" min={0.2} max={20}  className="bg-white/5 border 
+            border-white/5 rounded px-2 py-1 text-[10px] text-white w-full outline-none focus:border-white/20"
+            onInput ={ (e) =>  {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    updateKeyframes(selectedClip, 'speed', e.target.value)
+              }}
+            value = {getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'speed')}/>
           </PropertyRow>
 
           {(isVideo || isText) && (
@@ -3775,8 +3903,233 @@ const PropertiesAside = () => {
   );
 };
 
+//speed keyframe system
+
+// sync anothers keyframes to the speed keyframes
+
+const syncKeyframesToSpeedCurve = (clip: Clip) => {
+  if (!clip.keyframes?.speed || clip.keyframes.speed.length === 0) return;
+
+  const speedKfs = [...clip.keyframes.speed].sort((a, b) => a.time - b.time);
+
+  // Esta lógica converte o "Tempo do Arquivo Original" para "Tempo na Timeline"
+  const mapAssetTimeToTimeline = (targetAssetTime: number): number => {
+    let currentAssetTime = 0;
+    let currentTimelineTime = 0;
+
+    for (let i = 0; i < speedKfs.length - 1; i++) {
+      const start = speedKfs[i];
+      const end = speedKfs[i + 1];
+      const segmentTimelineDuration = end.time - start.time;
+      const avgSpeed = (start.value + end.value) / 2;
+      const segmentAssetDuration = segmentTimelineDuration * avgSpeed;
+
+      if (currentAssetTime + segmentAssetDuration >= targetAssetTime) {
+        const remainingAssetTime = targetAssetTime - currentAssetTime;
+        return currentTimelineTime + (remainingAssetTime / avgSpeed);
+      }
+      currentAssetTime += segmentAssetDuration;
+      currentTimelineTime += segmentTimelineDuration;
+    }
+    const lastSpeed = speedKfs[speedKfs.length - 1].value;
+    return currentTimelineTime + (targetAssetTime - currentAssetTime) / lastSpeed;
+  };
+
+  setClips((prevClips) =>
+    prevClips.map((c) => {
+      if (c.id === clip.id) {
+        const updatedKfs = { ...c.keyframes };
+        const typesToRemap: (keyof NonNullable<Clip['keyframes']>)[] = ['volume', 'opacity', 'rotation3d'];
+
+        typesToRemap.forEach((type) => {
+          if (updatedKfs[type]) {
+            // ATENÇÃO: Se você tiver c.originalKeyframes[type], use ele aqui
+            // para evitar erro cumulativo de ponto flutuante.
+            updatedKfs[type] = updatedKfs[type]!.map((kf) => ({
+              ...kf,
+              // O kf.time aqui é tratado como a posição fixa no arquivo original
+              time: mapAssetTimeToTimeline(kf.time), 
+            }));
+          }
+        });
+
+        return { ...c, keyframes: updatedKfs };
+      }
+      return c;
+    })
+  );
+};
+
+
+
+const updateClipDurationBySpeed = (clip: Clip) => {
+  if (!clip.keyframes?.speed || clip.keyframes.speed.length === 0) {
+    
+    setClips((prev) =>
+      prev.map((c) => (c.id === clip.id ? { ...c, duration: c.originalduration || c.maxduration || 10 } : c))
+    );
+    return;
+  }
+
+  const speedKfs = [...clip.keyframes.speed].sort((a, b) => a.time - b.time);
+  
+  let totalTimelineDuration = 0;
+  let remainingAssetMaterial = clip.originalduration || clip.maxduration; 
+  let lastSpeed = speedKfs[0].value;
+
+  for (let i = 0; i < speedKfs.length - 1; i++) {
+    const start = speedKfs[i];
+    const end = speedKfs[i + 1];
+
+    const segmentTimelineDuration = end.time - start.time;
+    const avgSpeed = (start.value + end.value) / 2;
+    const assetConsumedInSegment = segmentTimelineDuration * avgSpeed;
+
+    if (remainingAssetMaterial <= assetConsumedInSegment) {
+      totalTimelineDuration += remainingAssetMaterial / avgSpeed;
+      remainingAssetMaterial = 0;
+      break;
+    }
+
+    remainingAssetMaterial -= assetConsumedInSegment;
+    totalTimelineDuration += segmentTimelineDuration;
+    lastSpeed = end.value;
+  }
+
+  if (remainingAssetMaterial > 0) {
+    totalTimelineDuration += remainingAssetMaterial / lastSpeed;
+  }
+
+  setClips((prev) =>
+    prev.map((c) => (c.id === clip.id ? { ...c, duration: totalTimelineDuration } : c))
+  );
+};
+
+//convert logic 0-1 to 0.2 - 25 (0.5 is speed 1)
+const converterSpeed = (value: number): number => {
+  
+  if (value === 0.5) return 1.0;
+
+  if (value < 0.5) {
+    return 0.2 + ((value / 0.5) * (1.0 - 0.2));
+  } else {
+    const t = (value - 0.5) / 0.5;
+    return 1.0 + (t * (25.0 - 1.0));
+  }
+};
+
+
+//undoing converterSpeed
+const reverterSpeed = (realSpeed: number): number => {
+  
+  if (realSpeed === 1.0) return 0.5;
+
+  if (realSpeed < 1.0) {
+    const value = ((realSpeed - 0.2) / 0.8) * 0.5;
+    return Math.max(0, value); 
+  } else {
+    const value = ((realSpeed - 1.0) / 24.0) * 0.5 + 0.5;
+    return Math.min(1, value); 
+  }
+};
+
+
+const relocateSpeedKeyframes = (clip: Clip) => {
+  if (!clip.keyframes?.speed || clip.keyframes.speed.length <= 1) return;
+
+  // 1. Pegamos a versão estável antes da mudança (Histórico)
+  const lastStableState = history[history.length - 1];
+  const oldClip = lastStableState?.clips.find(c => c.id === clip.id);
+  
+  if (!oldClip || !oldClip.keyframes?.speed) return;
+
+  const oldSpeedKfs = [...oldClip.keyframes.speed].sort((a, b) => a.time - b.time);
+  const currentSpeedKfs = [...clip.keyframes.speed].sort((a, b) => a.time - b.time);
+
+  // 2. Criamos o novo array de keyframes
+  const updatedSpeedKfs: Keyframe[] = [];
+  
+  // O primeiro ponto sempre fica no tempo 0 (início do clip)
+  updatedSpeedKfs.push({ ...currentSpeedKfs[0], time: 0 });
+
+  let accumulatedTimelineTime = 0;
+
+  for (let i = 1; i < currentSpeedKfs.length; i++) {
+    const currentKf = currentSpeedKfs[i];
+    
+    // Encontramos o correspondente no clipe antigo para saber o "Asset Time" original
+    const oldKf = oldSpeedKfs.find(k => k.id === currentKf.id) || oldSpeedKfs[i];
+    const prevOldKf = oldSpeedKfs[i - 1];
+
+    if (oldKf && prevOldKf) {
+      // A) Calculamos quanto "vídeo real" havia entre esses dois pontos no clipe antigo
+      const oldSegmentDuration = oldKf.time - prevOldKf.time;
+      const oldAvgSpeed = (oldKf.value + prevOldKf.value) / 2;
+      const assetDistance = oldSegmentDuration * oldAvgSpeed;
+
+      // B) Agora calculamos onde esse "Asset Distance" termina na nova escala de tempo
+      // A nova velocidade média deste segmento (usando os valores atuais do slider)
+      const prevNewKf = updatedSpeedKfs[i - 1];
+      const newAvgSpeed = (currentKf.value + prevNewKf.value) / 2;
+
+      // Tempo na timeline = Distância do Vídeo / Velocidade
+      const newSegmentDuration = assetDistance / newAvgSpeed;
+      
+      accumulatedTimelineTime += newSegmentDuration;
+
+      updatedSpeedKfs.push({
+        ...currentKf,
+        time: accumulatedTimelineTime
+      });
+    } else {
+      // Fallback caso seja um ponto novo
+      updatedSpeedKfs.push(currentKf);
+    }
+  }
+
+  // 3. Atualizamos os clips garantindo que nenhum ponto ultrapasse a nova duração
+  setClips(prev => prev.map(c => {
+    if (c.id === clip.id) {
+      return {
+        ...c,
+        keyframes: {
+          ...c.keyframes,
+          speed: updatedSpeedKfs
+        }
+      };
+    }
+    return c;
+  }));
+};
+
+
+
+const handleSpeedKeyframeChange = (clip: Clip) => {
+
+  relocateSpeedKeyframes(clip)
+  updateClipDurationBySpeed(clip);
+  syncKeyframesToSpeedCurve(clip);
+};
+
+useEffect(() => {
+  if (selectedClipIds.length !== 1) return;
+
+  const selectedClip = clips.find(c => c.id === selectedClipIds[0]);
+  if (!selectedClip) return;
+
+  handleSpeedKeyframeChange(selectedClip);
+
+}, [JSON.stringify(clips.find(c => c.id === selectedClipIds[0])?.keyframes?.speed)]);
+
 //Keyframes System
-const updateKeyframes = (clip: Clip, type: 'opacity' | 'volume', value: string) => {
+
+
+
+
+
+
+
+const updateKeyframes = (clip: Clip, type: 'opacity' | 'volume' | 'speed', value: string) => {
   
   const newValue = parseFloat(value);
   const threshold = 0.05 
@@ -3821,10 +4174,68 @@ const updateKeyframes = (clip: Clip, type: 'opacity' | 'volume', value: string) 
       c.id === clip.id ? { ...c, keyframes: updatedKeyframes } : c
     )
   );
+
+
+  if(type == 'speed')
+    handleSpeedKeyframeChange(clip)
+
+
+
 };
 
-
 const addKeyframe = (e: React.MouseEvent, clipId: string) => {
+  const clip = clips.find(c => c.id === clipId);
+  if (!clip || !clip.activeKeyframeView) return;
+
+  const rect = e.currentTarget.getBoundingClientRect();
+  const clickX = e.clientX - rect.left;
+  const clickY = e.clientY - rect.top;
+
+  const time = clickX / pixelsPerSecond;
+  // Valor visual (0 a 1) vindo do clique
+  const rawValue = Math.max(0, Math.min(1, 1 - (clickY / rect.height)));
+
+  setClips(prev => {
+    return prev.map(c => {
+      if (c.id !== clipId) return c;
+      
+      const view = c.activeKeyframeView as keyof NonNullable<Clip['keyframes']>;
+      
+      // Calculamos o valor final baseado no tipo de visão
+      const finalValue = view === 'speed' ? converterSpeed(rawValue) : rawValue;
+
+      const currentKfs = c.keyframes?.[view] || [];
+
+      // Verifica proximidade para evitar duplicatas
+      if (currentKfs.some(k => Math.abs(k.time - time) < 0.05)) return c;
+
+      const newKeyframe: Keyframe = {
+        id: crypto.randomUUID(),
+        time: time,
+        value: finalValue
+      };
+
+      const updatedClip = {
+        ...c,
+        keyframes: {
+          ...c.keyframes,
+          [view]: [...currentKfs, newKeyframe].sort((a, b) => a.time - b.time)
+        }
+      };
+
+      // Disparar a lógica de Speed Ramp se necessário
+      // Fazemos isso aqui dentro para garantir que estamos usando o objeto atualizado
+      if (view === 'speed') {
+        // Usamos setTimeout para tirar a execução da thread de renderização do setClips
+        setTimeout(() => handleSpeedKeyframeChange(updatedClip), 0);
+      }
+
+      return updatedClip;
+    });
+  });
+};
+
+const addKeyframe_old = (e: React.MouseEvent, clipId: string) => {
   const clip = clips.find(c => c.id === clipId);
   // Só adiciona se houver uma visão de keyframe ativa (ex: 'volume')
   if (!clip || !clip.activeKeyframeView) return;
@@ -3835,17 +4246,28 @@ const addKeyframe = (e: React.MouseEvent, clipId: string) => {
 
   const time = clickX / pixelsPerSecond;
   // Inverte o Y: clique no topo = 1.0 (100%), clique na base = 0.0 (0%)
-  const value = Math.max(0, Math.min(1, 1 - (clickY / rect.height)));
+  let value = Math.max(0, Math.min(1, 1 - (clickY / rect.height)));
+
+  console.log(value)
 
   setClips(prev => prev.map(c => {
     if (c.id !== clipId) return c;
     
     const view = c.activeKeyframeView as keyof NonNullable<Clip['keyframes']>;
+
+
+   if( view == 'speed')
+        value = converterSpeed(value)
+
+
+
+
     const currentKfs = c.keyframes?.[view] || [];
 
     // Se já houver um ponto muito perto no tempo, não cria outro
     if (currentKfs.some(k => Math.abs(k.time - time) < 0.05)) return c;
 
+    console.log('valor a ser mandado', value, view)
     const newKeyframe: Keyframe = {
       id: crypto.randomUUID(),
       time: time,
@@ -3860,12 +4282,27 @@ const addKeyframe = (e: React.MouseEvent, clipId: string) => {
       }
     };
   }));
+
+
+  if( clip.activeKeyframeView == 'speed')
+     handleSpeedKeyframeChange(clip)
+
+  
+
 };
 
 {/* Função auxiliar para calcular o Y em pixels baseado na altura do clipe (ex: 40px) */}
-const calculateY = (value: number, height: number) => {
+const calculateY = (value: number, height: number, type:string = '') => {
+  
+  if(type == 'speed')
+    return (1 - reverterSpeed(value)) * height
+  
+  
+  
   return (1 - value) * height;
 };
+
+
 
 // No seu código dentro do SVG:
 
@@ -3886,7 +4323,7 @@ const handleKeyframeDrag = (
     
     // Calcula novos valores baseados na posição do mouse
     const newTime = (moveEvent.clientX - rect.left) / pixelsPerSecond;
-    const newValue = Math.max(0, Math.min(1, 1 - (moveEvent.clientY - rect.top) / rect.height));
+    let newValue = Math.max(0, Math.min(1, 1 - (moveEvent.clientY - rect.top) / rect.height));
 
     setClips(prev => prev.map(c => {
       if (c.id !== clipId) return c;
@@ -3899,11 +4336,20 @@ const handleKeyframeDrag = (
       const minTime = kfs[idx - 1]?.time || 0;
       const maxTime = kfs[idx + 1]?.time || c.duration;
 
+
+      if( view == 'speed')
+        converterSpeed(newValue)
+
       kfs[idx] = {
         ...kfs[idx],
         time: Math.max(minTime, Math.min(maxTime, newTime)),
         value: newValue
       };
+
+     
+      if( view == 'speed')
+          handleSpeedKeyframeChange(c)
+
 
       return {
         ...c,
@@ -3919,6 +4365,9 @@ const handleKeyframeDrag = (
 
   document.addEventListener('mousemove', onMouseMove);
   document.addEventListener('mouseup', onMouseUp);
+
+
+
 };
 
 const deleteKeyframe = (clipId: string, kfId: string, view: string) => {
@@ -4639,7 +5088,7 @@ return (
               draggable="true"
               onContextMenu={(e) => handleContextMenu(e, assetTarget?.type, clip)}
               onDragStart={(e) => handleDragStart(e, clip.color, track.id, clip.duration, clip.name, true, clip.id)}
-              onClick={(e) => { e.stopPropagation(); toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey); setContextMenu(null) }}
+              onClick={(e) => { e.stopPropagation(); toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey); setContextMenu(null); addKeyframe(e, clip.id) }}
               className={`absolute  inset-y-1.5 ${clip.color} rounded-md flex items-center shadow-lg cursor-grab active:cursor-grabbing border-2 ${
                 selectedClipIds.includes(clip.id) ? 'border-white ring-4 ring-white/10 z-30' : 'border-black/20'
               }`}
@@ -4648,7 +5097,7 @@ return (
                 width: clip.duration * pixelsPerSecond,
               }}
 
-               onDoubleClick={(e) => addKeyframe(e, clip.id)}
+               //onDoubleClick={(e) =>{ e.stopPropagation(); }}
             >
 
               {/* Context Menu (right click mouse) */}
@@ -4805,7 +5254,7 @@ return (
                   points={(clip.keyframes?.[clip.activeKeyframeView!] || [])
                     .map(kf => {
                       const x = kf.time * pixelsPerSecond;
-                      const y = calculateY(kf.value, 40); // 40 é a altura da sua track
+                      const y = calculateY(kf.value, 40, clip.activeKeyframeView); // 40 é a altura da sua track
                       return `${x},${y}`;
                     })
                     .join(' ')}
@@ -4817,7 +5266,7 @@ return (
                   <circle
                     key={kf.id}
                     cx={kf.time * pixelsPerSecond}
-                    cy={`${(1 - kf.value) * 100}%`}
+                    cy={clip.activeKeyframeView === 'speed' ? `${(1 - reverterSpeed(kf.value)) * 100}%` : `${(1 - kf.value) * 100}%`}
                     r="5"
                     fill="white"
                     stroke="#7c3aed"
@@ -4828,6 +5277,7 @@ return (
                       e.preventDefault();
                       e.stopPropagation();
                       handleKeyframeDrag(e, clip.id, kf.id, clip.activeKeyframeView!);
+                      
                     }}
                     onContextMenu={(e) => {
                       e.preventDefault();
