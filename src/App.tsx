@@ -57,11 +57,14 @@ import {
   LockIcon,
   EyeOff,
   BrushCleaning,
-  DiamondPlus
+  DiamondPlus,
+  ChevronDown
   
 } from 'lucide-react';
 
 import Waveform from "@/components/Waveform";
+import ProjectSettingsModal from "@/components/ProjectSettingsModal";
+
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -74,6 +77,16 @@ import { listen } from '@tauri-apps/api/event';
 
 // --- INTERFACES ---
 
+
+interface ProjectSettings {
+  name: string;
+  width: number;
+  height: number;
+  fps: number;
+  backgroundColor: string;
+  sampleRate: number;
+}
+
 interface Project {
   name: string;
   path: string;
@@ -82,7 +95,20 @@ interface Project {
 interface Keyframe {
   id: string;
   time: number;  
-  value: number; 
+  value: number | Position | Rotation; 
+}
+
+interface Position
+{
+  x: number;
+  y: number;
+}
+
+interface Rotation
+{
+  x: number;
+  y: number;
+  z: number;
 }
 
 interface Clip {
@@ -106,6 +132,7 @@ interface Clip {
   opacity?: Keyframe[];
   speed?: Keyframe[];
   rotation3d?: Keyframe[];
+  position?: Keyframe[];
 };
   
 
@@ -165,12 +192,15 @@ export default function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
   const [clips, setClips] = useState<Clip[]>([]);
-  const [tracks, setTracks] = useState<Tracks[]>([0]);
+  const [tracks, setTracks] = useState<Tracks[]>([]);
 
   //deleteClipId is used to store the id of a clip that is changed of track
   const [deleteClipId, setDeleteClipId] = useState<string | null>(null);
 
-  const currentProjectPath = localStorage.getItem("current_project_path");
+  //var currentProjectPath = localStorage.getItem("current_project_path");
+
+  const [currentProjectPath, setCurrentProjectPath] = useState < String | null >(null);
+
   const timelineRef = useRef<HTMLDivElement>(null);
   const timelineContainerRef = useRef<HTMLDivElement>(null);
   const asidetrack = useRef<HTMLDivElement>(null);
@@ -180,6 +210,45 @@ export default function App() {
   
   const playheadRef = useRef<HTMLDivElement>(null);
   //const mainPlayer = useRef<HTMLVideoElement>(null);
+
+
+  //part to Project Config
+
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // 2. Estado para armazenar as configurações do projeto
+  const [projectConfig, setProjectConfig] = useState<ProjectSettings>({
+    name: "New Project",
+    width: 1920,
+    height: 1080,
+    fps: 24,
+    backgroundColor: "#000000",
+    sampleRate: 48000
+  });
+
+  // Função para salvar vinda do Modal
+const handleSaveSettings = async (newSettings: ProjectSettings) => {
+  try {
+    const newPath = await invoke<string>('save_project_config', { 
+      path: currentProjectPath, 
+      config: newSettings 
+    });
+
+    loadProjects()
+
+    setCurrentProjectPath(newPath)
+
+    setProjectConfig(newSettings);
+    setProjectName(newSettings.name);
+    
+    setIsSettingsOpen(false);
+    console.log("Project saved and renamed to:", newPath);
+
+  } catch (err) {
+    console.error("Save failed:", err);
+    alert(err); 
+  }
+};
 
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -532,8 +601,11 @@ const startExport = async () => {
   return Math.round(num * 100) / 100;
 };
 
-  const clips_format = clips.map( c => { return {
-    ...c,path: `${currentProjectPath}/videos/${c.name}` ,
+  const clips_format = clips.map( c => { 
+    
+    
+    return {
+    ...c ,path: `${currentProjectPath}/videos/${c.name}` ,
     trackId: c.trackId.toString(),
      type: knowTypeByAssetName(c.name),
       mute: c.mute ?? false,
@@ -542,9 +614,8 @@ const startExport = async () => {
   start: sanitizeNumber(c.start)
     }})
 
-      console.log('cf lalala ', clips_format)
-  
-  console.log( clips_format.map(c => c.path) )
+
+
 
 
     // 2. Chama o Rust
@@ -699,6 +770,16 @@ const audioPlayersRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
 //Render all audios of the current time
 
+const convertDB = (kfValue: number) => {
+    const db = (kfValue * 60) - 30;
+    return db;
+  };
+
+const reverterVolume = (db: number): number =>
+{
+   const value = (db + 30)/60;
+   return value
+}
 
 useEffect(() => {
   if (!topAudios || topAudios.length === 0 || !isPlaying) {
@@ -718,7 +799,7 @@ useEffect(() => {
   });
 
   const keyframeToLinear = (kfValue: number) => {
-    const db = (kfValue * 100) - 50;
+    const db = (kfValue * 100) - 30;
     return Math.pow(10, db / 20);
   };
 
@@ -1063,7 +1144,117 @@ const getOpacityAtTime = (clip: Clip) => {
 
 
 //Render main frame
+// Função auxiliar para carregar imagem de forma síncrona/esperável
+// Função auxiliar para carregar imagem de forma síncrona/esperável
 const drawFrame = async (time: number) => {
+    if (!canvasRef.current || !topClips || topClips.length === 0) {
+        const ctx = canvasRef.current?.getContext('2d');
+        if (ctx && canvasRef.current) {
+            ctx.fillStyle = "black";
+            ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        }
+        return;
+    }
+
+    const now = performance.now();
+    if (now - lastFrameTimeRef.current < FPS_LIMIT) return;
+    lastFrameTimeRef.current = now;
+
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
+
+    const blendModeMap: Record<string, GlobalCompositeOperation> = {
+        'normal': 'source-over',
+        'screen': 'screen',
+        'multiply': 'multiply',
+        'overlay': 'overlay',
+        'lineardodge': 'lighter',
+    };
+
+    try {
+        // --- FASE 1: BUSCA EM PARALELO ---
+        const framePromises = topClips.map(async (clip) => {
+            const timelineRelativeTime = time - clip.start;
+            let assetRelativeTime = timelineRelativeTime;
+
+            // Lógica de Speed Ramp (Resumida para brevidade)
+            if (clip.keyframes?.speed?.length > 0) {
+                const speedKfs = [...clip.keyframes.speed].sort((a, b) => a.time - b.time);
+                let acc = 0; let lt = 0; let ls = speedKfs[0].value;
+                for (const kf of speedKfs) {
+                    if (timelineRelativeTime > kf.time) {
+                        acc += (kf.time - lt) * (ls + kf.value) / 2;
+                        lt = kf.time; ls = kf.value;
+                    } else {
+                        const dt = timelineRelativeTime - lt;
+                        const t = dt / (kf.time - lt || 1);
+                        const cs = ls + t * (kf.value - ls);
+                        acc += dt * (ls + cs) / 2;
+                        lt = timelineRelativeTime; break;
+                    }
+                }
+                if (timelineRelativeTime > lt) acc += (timelineRelativeTime - lt) * ls;
+                assetRelativeTime = acc;
+            }
+
+            const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
+            const path = `${currentProjectPath}/videos/${clip.name}`;
+
+            const frameBase64: string = await invoke('get_video_frame', { path, timeMs: clipTimeMs });
+
+            return new Promise<HTMLImageElement | null>((resolve) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => resolve(null);
+                img.src = frameBase64;
+            });
+        });
+
+        const loadedImages = await Promise.all(framePromises);
+
+        // --- FASE 2: DESENHO COM ORDEM INVERTIDA ---
+        
+        // Ajustamos o canvas pelo último clipe do array (que é o fundo/camada base)
+        const backgroundIdx = loadedImages.length - 1;
+        if (loadedImages[backgroundIdx]) {
+            const bgImg = loadedImages[backgroundIdx]!;
+            if (canvasRef.current.width !== bgImg.width) {
+                canvasRef.current.width = bgImg.width;
+                canvasRef.current.height = bgImg.height;
+            }
+        }
+
+        // Limpa o frame
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+        // REVERSO: Começamos do último clipe (fundo) até o index 0 (topo)
+        for (let i = loadedImages.length - 1; i >= 0; i--) {
+            const img = loadedImages[i];
+            const clip = topClips[i];
+            if (!img) continue;
+
+            const timelineRelativeTime = time - clip.start;
+            const opacity = getInterpolatedValueWithFades(timelineRelativeTime, clip, 'opacity');
+
+            ctx.save();
+            
+            // Configurações da camada
+            ctx.globalCompositeOperation = blendModeMap[clip.blendmode || 'normal'] || 'source-over';
+            ctx.globalAlpha = opacity;
+
+            // Desenha a camada (agora na ordem correta: fundo -> topo)
+            ctx.drawImage(img, 0, 0, canvasRef.current.width, canvasRef.current.height);
+            
+            ctx.restore();
+        }
+
+    } catch (err) {
+        console.error("Erro no preview:", err);
+    }
+};
+
+const drawFrame_Old = async (time: number) => {
     if (!canvasRef.current) return;
 
     const now = performance.now();
@@ -1167,90 +1358,6 @@ const drawFrame = async (time: number) => {
         console.error("Erro ao buscar frame:", err);
     }
 };
-
-const drawFrame_old = async (time: number) => {
-    if (!canvasRef.current) return;
-
-    const now = performance.now();
-    if (now - lastFrameTimeRef.current < FPS_LIMIT) 
-      return;
-    lastFrameTimeRef.current = now;
-      
-    const ctx = canvasRef.current.getContext('2d');
-
-    if (!topClip) {
-        if (ctx && canvasRef.current) {
-            ctx.fillStyle = "black";
-            ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-        }
-        return;
-    }
-
-    // --- CÁLCULO DA OPACIDADE (FADE) ---
-    let opacity = 1.0;
-    const relativeTime = time - topClip.start; // Tempo decorrido dentro do clipe (segundos)
-    const fadeinDuration = topClip.fadein || 0;
-    const fadeoutDuration = topClip.fadeout || 0;
-
-    // Lógica de Fade In
-   /*
-    if (relativeTime < fadeinDuration && fadeinDuration > 0) {
-        opacity = relativeTime / fadeinDuration;
-    } 
-    // Lógica de Fade Out
-    else if (relativeTime > (topClip.duration - fadeoutDuration) && fadeoutDuration > 0) {
-        const timeRemaining = topClip.duration - relativeTime;
-        opacity = timeRemaining / fadeoutDuration;
-    }
-
-    // Clamp para garantir que fique entre 0 e 1
-    opacity = Math.max(0, Math.min(1, opacity));
-
-    //if has a keyframe the value are multiplied
-   */
-
-    opacity = getInterpolatedValueWithFades(time, topClip, 'opacity')
-
-    console.log('opacity', opacity)
-    console.log('clip now frame', topClip.keyframes?.opacity)
-
-    // Tempo para o Rust (milissegundos)
-    const clipTimeMs = (relativeTime + (topClip.beginmoment || 0)) * 1000;
-    const path = `${currentProjectPath}/videos/${topClip.name}`;
-
-    try {
-        const frameBase64: string = await invoke('get_video_frame', { 
-            path, 
-            timeMs: clipTimeMs 
-        });
-
-        const img = new Image();
-        img.onload = () => {
-            if (canvasRef.current && ctx) {
-                canvasRef.current.width = img.width;
-                canvasRef.current.height = img.height;
-
-                // 1. Limpa o canvas com preto (para o fade não sobrepor frames antigos)
-                ctx.fillStyle = "black";
-                ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-                // 2. Aplica a opacidade calculada
-                ctx.globalAlpha = opacity;
-                
-                // 3. Desenha o frame
-                ctx.drawImage(img, 0, 0);
-
-                // 4. Reseta o alpha para não afetar outros desenhos futuros
-                ctx.globalAlpha = 1.0;
-            }
-        };
-        img.src = frameBase64;
-         
-    } catch (err) {
-        console.error("Erro ao buscar frame:", err);
-    }
-};
-
 
 
 useEffect(() => {
@@ -3075,6 +3182,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
               name: fileName,
               start: dropTime,
               duration: Math.min(duration, 10),
+              originalduration: Math.min(duration, 10),
               color: getRandomColor(),
               trackId: targetTrackId,
               maxduration: duration ? duration : 10,
@@ -3264,12 +3372,39 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
   };
 
 
-
   const handleFinishSetup = async () => {
+  if (rootPath && projectName) {
+    try {
+      // 1. Chamamos a função Rust enviando o path base, o nome e o objeto de config
+      const finalPath = await invoke<string>('create_project_setup', { 
+        rootPath, 
+        projectName,
+        config: projectConfig // O estado que você já está atualizando no onChange
+      });
+
+      // 2. Atualizamos o estado do caminho do projeto atual
+      setCurrentProjectPath(finalPath);
+
+      // 3. UI Updates
+      setIsCreatingNew(false);
+      loadProjects();
+      showNotify("Project Created!", "success");
+      
+      console.log("Project initialized at:", finalPath);
+    } catch (e) {
+      console.error(e);
+      showNotify("Error creating project structure", "error");
+    }
+  }
+};
+
+  const handleFinishSetup_old = async () => {
     if (rootPath && projectName) {
       try {
         const finalPath = await invoke('create_project_folder', { rootPath, projectName });
-        localStorage.setItem("current_project_path", finalPath as string);
+        //localStorage.setItem("current_project_path", finalPath as string);
+        setCurrentProjectPath(finalPath as String)
+
         setIsCreatingNew(false);
         loadProjects();
         showNotify("Project Created!", "success");
@@ -3282,15 +3417,21 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
 const openProject = async (path: string) => {
 
   console.log('project path', path)
-  localStorage.setItem("current_project_path", path);
+  //localStorage.setItem("current_project_path", path);
+  setCurrentProjectPath(path)
   
   try
   {
-      
+    
+    const config = await invoke<ProjectSettings>('load_project_config', { path: path });
+    setProjectConfig(config);
+    setProjectName(config.name || "Unnamed Project" )
+
+    console.log('config', config)
     
     const rawData = await invoke('load_latest_project', { projectPath: path });
     var parsed = JSON.parse(rawData as string);
-    setProjectName(parsed.projectName)
+    //setProjectName(parsed.projectName)
 
 
 
@@ -3298,7 +3439,7 @@ const openProject = async (path: string) => {
     setClips(parsed.clips || []);
     setAssets(parsed.assets || []);
     setTracks(parsed.tracks || []);
-    setProjectName(parsed.projectName || "Unnamed Project");
+    //setProjectName(parsed.projectName || "Unnamed Project");
 
  
     
@@ -3885,7 +4026,7 @@ const PropertiesAside = () => {
             <div className="flex justify-between items-center w-full pr-2">
               <span>Volume</span>
               <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/5 border border-white/10 ml-10" style={{ color: activeHex }}>
-                {(getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'volume') * 100).toFixed(0)}%
+                {(getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'volume')).toFixed(2)} db
               </span>
             </div>
           } 
@@ -3901,7 +4042,7 @@ const PropertiesAside = () => {
               e.preventDefault(); e.stopPropagation();
               updateKeyframes(selectedClip, 'volume', (e.target as HTMLInputElement).value)
             }} 
-            min={0} max={1}
+            min={-30} max={30}
             value={getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'volume')}
           />
         </PropertyRow>
@@ -4064,13 +4205,31 @@ const PropertiesAside = () => {
               <span className="text-[10px] font-black uppercase tracking-widest">Advanced</span>
             </div>
             <PropertyRow label="Blend Mode" keyframable={false}>
-              <select className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white w-full outline-none">
-                <option>Normal</option>
-                <option>Screen</option>
-                <option>Multiply</option>
-                <option>Overlay</option>
-              </select>
-            </PropertyRow>
+  <div className="relative w-full">
+    <select 
+      className="appearance-none w-full bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none focus:border-white/20 cursor-pointer pr-6"
+      value={selectedClip.blendmode || 'normal'}
+      onChange={(e) => {
+        e.stopPropagation();
+        const newBlendMode = e.target.value as any;
+        setClips(prev => prev.map(c => 
+          c.id === selectedClip.id ? { ...c, blendmode: newBlendMode } : c
+        ));
+      }}
+    >
+      <option value="normal" className="bg-[#090909]">Normal</option>
+      <option value="screen" className="bg-[#090909]">Screen</option>
+      <option value="lineardodge" className="bg-[#090909]">Add (Linear Dodge)</option>
+      <option value="multiply" className="bg-[#090909]">Multiply</option>
+      <option value="overlay" className="bg-[#090909]">Overlay</option>
+    </select>
+    
+    {/* Setinha customizada para compensar o appearance-none */}
+    <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-500">
+      <ChevronDown size={10} />
+    </div>
+  </div>
+</PropertyRow>
             <PropertyRow label="Mask" keyframable={false}>
               <button className="w-full bg-white/5 border border-white/5 rounded py-2 text-[9px] font-bold hover:bg-white/10 transition-all uppercase">
                 Edit Mask
@@ -4592,9 +4751,8 @@ const handleClipMouseMove = (e: React.MouseEvent, clip: Clip) => {
     const realSpeed = converterSpeed(value);
     displayValue = `${realSpeed.toFixed(2)}x`;
   } else if (clip.activeKeyframeView === 'volume') {
-    // Exemplo: converter para dB para o usuário ver algo familiar
-    const db = (value * 100) - 50;
-    displayValue = `${db.toFixed(1)} dB`;
+    const db = convertDB(value);
+    displayValue = `${db} dB`;
   } else {
     displayValue = `${Math.round(value * 100)}%`;
   }
@@ -4684,7 +4842,8 @@ const addKeyframe = (e: React.MouseEvent, clipId: string) => {
       const view = c.activeKeyframeView as keyof NonNullable<Clip['keyframes']>;
       
       // Calculamos o valor final baseado no tipo de visão
-      const finalValue = view === 'speed' ? converterSpeed(rawValue) : rawValue;
+      let finalValue = view === 'speed' ? converterSpeed(rawValue) : rawValue;
+      finalValue = view === 'volume' ? convertDB(rawValue) : rawValue;
 
       const currentKfs = c.keyframes?.[view] || [];
 
@@ -4778,6 +4937,10 @@ const calculateY = (value: number, height: number, type:string = '') => {
   
   if(type == 'speed')
     return (1 - reverterSpeed(value)) * height
+
+  if(type == 'volume')
+    return (1- reverterVolume(value)) * height
+
   
   
   
@@ -4963,7 +5126,7 @@ return (
               <Youtube size={14} /> Download
             </button>
             <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400" title='Post in social media'><Share2 size={16}/></button>
-            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400" title='Settings'><Settings size={16}/></button>
+            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400" title='Settings' onClick={() => setIsSettingsOpen(true)}><Settings size={16}/></button>
             <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400" title='Export video' onClick={()=> { startExport();}}><Import size={16}/></button>
           </div>
         </header>
@@ -5771,7 +5934,7 @@ return (
                   <circle
                     key={kf.id}
                     cx={kf.time * pixelsPerSecond}
-                    cy={clip.activeKeyframeView === 'speed' ? `${(1 - reverterSpeed(kf.value)) * 100}%` : `${(1 - kf.value) * 100}%`}
+                    cy={clip.activeKeyframeView === 'volume' ? `${(1 - reverterVolume(kf.value)) * 100}%`  : clip.activeKeyframeView === 'speed' ? `${(1 - reverterSpeed(kf.value)) * 100}%` : `${(1 - kf.value) * 100}%`}
                     r="5"
                     fill="white"
                     stroke="#7c3aed"
@@ -5970,21 +6133,81 @@ return (
     {/* MODALS  */}
 
     {/* Modal to create new project */}
-    <AnimatePresence>
-      {isCreatingNew && (
-        <div className="fixed inset-0 bg-black/95 z-[300] flex items-center justify-center p-4">
-          <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }} className="bg-[#121212] border border-zinc-800 p-10 rounded-3xl w-full max-w-sm shadow-2xl">
-            <h2 className="text-2xl font-black mb-8 text-white italic">NEW PROJECT</h2>
-            <input type="text" placeholder="Project Title" value={projectName} onChange={(e) => setProjectName(e.target.value)}
-              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-4 text-white font-bold outline-none focus:border-red-600 transition-all" />
-            <div className="flex gap-4 mt-6">
-              <button onClick={() => setIsCreatingNew(false)} className="flex-1 py-4 text-[10px] font-black text-zinc-500 uppercase">Cancel</button>
-              <button onClick={handleFinishSetup} className="flex-1 bg-red-600 py-4 rounded-2xl font-black text-xs text-white uppercase">Create</button>
+<AnimatePresence>
+  {isCreatingNew && (
+    <div className="fixed inset-0 bg-black/95 z-[300] flex items-center justify-center p-4 backdrop-blur-md">
+      <motion.div 
+        initial={{ scale: 0.9, opacity: 0 }} 
+        animate={{ scale: 1, opacity: 1 }} 
+        className="bg-[#121212] border border-zinc-800 p-8 rounded-3xl w-full max-w-md shadow-2xl"
+      >
+        <h2 className="text-2xl font-black mb-6 text-white italic tracking-tighter">NEW PROJECT</h2>
+        
+        <div className="space-y-4">
+          {/* Project Title */}
+          <div>
+            <label className="text-[10px] font-black text-zinc-500 uppercase mb-2 block">Project Name</label>
+            <input 
+              type="text" 
+              placeholder="My Awesome Project" 
+              onChange={(e) => {setProjectName(e.target.value)
+                setProjectConfig({ ...projectConfig, name: e.target.value})
+              }}
+              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-white font-bold outline-none focus:border-red-600 transition-all text-sm" 
+            />
+          </div>
+
+          {/* Resolution & FPS Grid */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-[10px] font-black text-zinc-500 uppercase mb-2 block">Resolution</label>
+              <select 
+                onChange={(e) => {
+                  const [w, h] = e.target.value.split('x').map(Number);
+                  setProjectConfig({ ...projectConfig, width: w, height: h });
+                }}
+                className="w-full bg-black border border-zinc-800 rounded-xl px-3 py-3 text-white font-bold outline-none focus:border-red-600 transition-all text-xs appearance-none"
+              >
+                <option value="1920x1080">1080p (16:9)</option>
+                <option value="1080x1920">TikTok (9:16)</option>
+                <option value="3840x2160">4K Ultra HD</option>
+                <option value="1080x1080">Square (1:1)</option>
+              </select>
             </div>
-          </motion.div>
+
+            <div>
+              <label className="text-[10px] font-black text-zinc-500 uppercase mb-2 block">Frame Rate</label>
+              <select 
+                onChange={(e) => setProjectConfig({ ...projectConfig, fps: Number(e.target.value) })}
+                className="w-full bg-black border border-zinc-800 rounded-xl px-3 py-3 text-white font-bold outline-none focus:border-red-600 transition-all text-xs appearance-none"
+              >
+                <option value="24">24 FPS</option>
+                <option value="30">30 FPS</option>
+                <option value="60">60 FPS</option>
+              </select>
+            </div>
+          </div>
         </div>
-      )}
-    </AnimatePresence>
+
+        {/* Action Buttons */}
+        <div className="flex gap-4 mt-8">
+          <button 
+            onClick={() => setIsCreatingNew(false)} 
+            className="flex-1 py-4 text-[10px] font-black text-zinc-600 hover:text-white transition-colors uppercase tracking-widest"
+          >
+            Cancel
+          </button>
+          <button 
+            onClick={handleFinishSetup} 
+            className="flex-1 bg-red-600 hover:bg-red-700 py-4 rounded-2xl font-black text-xs text-white uppercase tracking-widest shadow-lg shadow-red-900/20 transition-all"
+          >
+            Create Project
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  )}
+</AnimatePresence>
 
     {/* Import Modal */}
     <AnimatePresence>
@@ -6066,6 +6289,16 @@ return (
     </motion.div>
   )}
 </AnimatePresence>
+
+
+  {/* Project Config */}
+  <ProjectSettingsModal 
+    isOpen={isSettingsOpen}
+    key={projectConfig.name} 
+    onClose={() => setIsSettingsOpen(false)} 
+    currentSettings={projectConfig}
+    onSave={handleSaveSettings}
+  />
   </div>
 );
 }

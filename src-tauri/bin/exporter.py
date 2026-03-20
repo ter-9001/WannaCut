@@ -39,16 +39,13 @@ def get_speed_interpolator(speed_kfs):
     values = [kf['value'] for kf in kfs]
 
     def timeline_to_asset_time(t):
-        # t pode ser um número ou um array de números (comum no áudio do MoviePy)
         is_array = isinstance(t, np.ndarray)
         t_func = t if is_array else np.array([t])
-        
         results = []
         for val in t_func:
             if val <= times[0]:
                 results.append(val * values[0])
                 continue
-            
             acc = times[0] * values[0]
             found = False
             for i in range(len(times) - 1):
@@ -65,10 +62,26 @@ def get_speed_interpolator(speed_kfs):
                     break
             if not found:
                 results.append(acc + (val - times[-1]) * values[-1])
-        
         return np.array(results) if is_array else results[0]
-
     return timeline_to_asset_time
+
+def apply_blending(bg, fg, mode):
+    """ Implementação matemática de blend modes via NumPy """
+    if mode == 'normal' or mode is None: return fg
+    b = bg.astype(float) / 255.0
+    f = fg.astype(float) / 255.0
+    
+    if mode == 'screen':
+        res = 1 - (1 - b) * (1 - f)
+    elif mode == 'multiply':
+        res = b * f
+    elif mode == 'overlay':
+        res = np.where(b < 0.5, 2 * b * f, 1 - 2 * (1 - b) * (1 - f))
+    elif mode == 'lineardodge':
+        res = np.clip(b + f, 0, 1)
+    else:
+        return fg
+    return (res * 255).astype('uint8')
 
 def export_video():
     try:
@@ -81,80 +94,101 @@ def export_video():
         clips_data = payload['clips']
         target_size = (1920, 1080) 
 
-        video_clips = []
-        for c in clips_data:
+        processed_clips = []
+        # Index 0 é o topo no seu JSON. MoviePy precisa do fundo primeiro.
+        reversed_clips = list(reversed(clips_data))
+
+        for c in reversed_clips:
             path = c['path']
+            is_image = c.get('type') == 'image'
             
-            # 1. Carregamento e Speed Ramp
-            if c.get('type') == 'image':
+            if is_image:
                 clip = ImageClip(path).with_duration(c['duration'])
             else:
                 full_clip = VideoFileClip(path)
                 speed_kfs = c.get('keyframes', {}).get('speed', [])
                 if speed_kfs:
-                    time_mapper = get_speed_interpolator(speed_kfs)
-                    clip = full_clip.time_transform(time_mapper)
-                    if full_clip.audio is not None:
-                        clip = clip.with_audio(full_clip.audio.time_transform(time_mapper))
-                    clip = clip.with_duration(c['duration'])
-                    clip = clip.subclipped(c['beginmoment'], c['beginmoment'] + c['duration'])
+                    mapper = get_speed_interpolator(speed_kfs)
+                    clip = full_clip.time_transform(mapper)
+                    if full_clip.audio: clip = clip.with_audio(full_clip.audio.time_transform(mapper))
+                    clip = clip.with_duration(c['duration']).subclipped(c['beginmoment'], c['beginmoment'] + c['duration'])
                 else:
                     clip = full_clip.subclipped(c['beginmoment'], c['beginmoment'] + c['duration'])
 
-            # 2. Fades
-            f_in = float(c.get("fadein", 0))
-            f_out = float(c.get("fadeout", 0))
-            fa_in = float(c.get("fadeinAudio", 0))
-            fa_out = float(c.get("fadeoutAudio", 0))
+            # Opacidade e Fades
+            op_kfs = sorted(c.get('keyframes', {}).get('opacity', []), key=lambda x: x['time'])
+            f_in, f_out = float(c.get("fadein", 0)), float(c.get("fadeout", 0))
 
-            if f_in > 0: clip = clip.with_effects([vfx.FadeIn(f_in)])
-            if f_out > 0: clip = clip.with_effects([vfx.FadeOut(f_out)])
-            if clip.audio is not None:
-                if fa_in > 0: clip.audio = clip.audio.with_effects([afx.AudioFadeIn(fa_in)])
-                if fa_out > 0: clip.audio = clip.audio.with_effects([afx.AudioFadeOut(fa_out)])
+            def opacity_tr(get_f, t):
+                frame = get_f(t)
+                opacity = np.interp(t, [k['time'] for k in op_kfs], [k['value'] for k in op_kfs]) if op_kfs else 1.0
+                if f_in > 0 and t < f_in: opacity *= (t / f_in)
+                if f_out > 0 and t > (clip.duration - f_out): opacity *= (clip.duration - t) / f_out
+                return (frame * opacity).astype('uint8')
 
-            # 3. Keyframes de Opacidade
-            op_kfs = c.get('keyframes', {}).get('opacity', [])
-            if op_kfs:
-                op_kfs = sorted(op_kfs, key=lambda x: x['time'])
-                o_times = [kf['time'] for kf in op_kfs]
-                o_values = [kf['value'] for kf in op_kfs]
+            clip = clip.transform(opacity_tr)
+
+            # Audio Volume
+            vol_kfs = sorted(c.get('keyframes', {}).get('volume', []), key=lambda x: x['time'])
+            if not is_image and clip.audio:
+                vol_kfs = sorted(c.get('keyframes', {}).get('volume', []), key=lambda x: x['time'])
                 
-                def apply_opacity(get_f, t):
-                    frame = get_f(t)
-                    # np.interp lida bem com t sendo array ou escalar
-                    val = np.interp(t, o_times, o_values)
-                    # Se for áudio/array, precisamos expandir dimensões para multiplicar pelo frame
-                    if isinstance(val, np.ndarray):
-                        return (frame * val[:, None, None, None]).astype('uint8')
-                    return (frame * val).astype('uint8')
-                clip = clip.transform(apply_opacity)
-
-            # 4. Keyframes de Volume
-            vol_kfs = c.get('keyframes', {}).get('volume', [])
-            if (c.get('type') != 'image') and vol_kfs and clip.audio is not None:
-                vol_kfs = sorted(vol_kfs, key=lambda x: x['time'])
-                v_times = [kf['time'] for kf in vol_kfs]
-                v_values = [kf['value'] for kf in vol_kfs]
-                
-                def apply_volume(get_f, t):
+                def vol_tr(get_f, t):
                     chunk = get_f(t)
-                    val = np.interp(t, v_times, v_values)
-                    gain = 10 ** ((-30 + (val * 60)) / 20)
+                    
+                    if vol_kfs:
+                        db_val = np.interp(t, [k['time'] for k in vol_kfs], [k['value'] for k in vol_kfs])
+                    else:
+                        db_val = 0.0
+                    
+                    gain = 10 ** (db_val / 20.0)
                     
                     if isinstance(gain, np.ndarray):
                         return chunk * gain[:, np.newaxis]
                     return chunk * gain
-                clip.audio = clip.audio.transform(apply_volume)
 
-            # 5. Redimensionamento
+                clip.audio = clip.audio.transform(vol_tr)
+
             clip = clip.resized(height=target_size[1])
             if clip.w > target_size[0]: clip = clip.resized(width=target_size[0])
             clip = clip.with_start(c['start']).with_position("center")
-            video_clips.append(clip)
+            
+            # Guardamos o blendmode e informações de tempo para a composição manual
+            clip.my_blend_mode = c.get('blendmode', 'normal')
+            processed_clips.append(clip)
 
-        # 6. Escrita do arquivo
-        final_video = CompositeVideoClip(video_clips, size=target_size)
+        # COMPOSIÇÃO MANUAL VIA CUSTOM FRAME GENERATOR
+        duration = max(c['start'] + c['duration'] for c in clips_data)
+
+        def custom_composer(t):
+            # Frame base (fundo preto)
+            final_f = np.zeros((target_size[1], target_size[0], 3), dtype='uint8')
+            
+            for clip in processed_clips:
+                if clip.start <= t < (clip.start + clip.duration):
+                    rel_t = t - clip.start
+                    fg_f = clip.get_frame(rel_t)
+                    
+                    # Garantir que o frame cabe ou está centralizado
+                    h, w, _ = fg_f.shape
+                    y_off = (target_size[1] - h) // 2
+                    x_off = (target_size[0] - w) // 2
+                    
+                    # ROI do Background
+                    bg_roi = final_f[y_off:y_off+h, x_off:x_off+w]
+                    
+                    # Aplica o Blend
+                    final_f[y_off:y_off+h, x_off:x_off+w] = apply_blending(bg_roi, fg_f, clip.my_blend_mode)
+            
+            return final_f
+
+        # Criamos um clipe vazio com a duração correta e injetamos nossa função de frames
+        # Usamos um VideoFileClip qualquer como "dummy" ou criamos um Composite apenas para extrair o áudio
+        comp_with_audio = CompositeVideoClip(processed_clips, size=target_size)
+        
+        # A forma correta de substituir o gerador de frames no MoviePy 2.x
+        final_video = comp_with_audio.transform(lambda get_f, t: custom_composer(t))
+
         final_video.write_videofile(
             export_path,
             fps=24,

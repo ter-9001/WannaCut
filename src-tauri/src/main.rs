@@ -116,6 +116,113 @@ struct ExportPayload {
 
 use tauri::{ Runtime}; // Certifique-se de usar Emitter no Tauri v2
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ProjectSettings {
+    name: String,
+    width: u32,
+    height: u32,
+    fps: f32,
+    #[serde(rename = "backgroundColor")] // Mapeia o camelCase do TS para o snake_case do Rust
+    background_color: String,
+    #[serde(rename = "sampleRate")]
+    sample_rate: u32,
+}
+
+#[tauri::command]
+async fn create_project_setup(
+    root_path: String, 
+    project_name: String, 
+    config: ProjectSettings
+) -> Result<String, String> {
+    let mut project_path = PathBuf::from(&root_path);
+    project_path.push(&project_name);
+
+    if project_path.exists() {
+        return Err("A project with this name already exists in this folder.".into());
+    }
+    
+    fs::create_dir_all(&project_path)
+        .map_err(|e| format!("Failed to create directory: {}", e))?;
+
+    let mut config_file = project_path.clone();
+    config_file.push("projectConfig.json");
+
+    let json_content = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+    fs::write(&config_file, json_content)
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
+
+    println!("🚀 New project initialized at: {:?}", project_path);
+
+    Ok(project_path.to_string_lossy().into_owned())
+}
+
+
+#[tauri::command]
+async fn save_project_config(path: String, config: ProjectSettings) -> Result<String, String> {
+    let current_dir = PathBuf::from(&path);
+    let parent_dir = current_dir.parent()
+        .ok_or("Não foi possível encontrar a pasta pai")?;
+    
+    let new_dir = parent_dir.join(&config.name);
+
+    let mut config_file_path = current_dir.clone();
+    config_file_path.push("projectConfig.json");
+
+    let json_content = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Erro ao gerar JSON: {}", e))?;
+
+    fs::write(&config_file_path, json_content)
+        .map_err(|e| format!("Erro ao gravar projectConfig.json: {}", e))?;
+
+    if current_dir != new_dir {
+        if new_dir.exists() {
+            return Err("Already exist a project with this name!".into());
+        }
+
+        fs::rename(&current_dir, &new_dir)
+            .map_err(|e| format!("Err to rename project: {}", e))?;
+        
+        
+    }
+
+    // Retornamos o NOVO caminho da pasta para o Frontend atualizar o estado
+    Ok(new_dir.to_string_lossy().into_owned())
+}
+#[tauri::command]
+async fn load_project_config(path: String) -> Result<ProjectSettings, String> {
+    println!("🔍 Tentando ler projeto em: {}", path);
+
+    let mut config_path = PathBuf::from(&path);
+    config_path.push("projectConfig.json");
+
+    // 1. Verificar se o caminho existe fisicamente
+    if !config_path.exists() {
+        let err_msg = format!("Arquivo não encontrado: {:?}", config_path);
+        println!("❌ {}", err_msg);
+        return Err(err_msg);
+    }
+
+    // 2. Tentar ler o arquivo
+    let content = fs::read_to_string(&config_path).map_err(|e| {
+        let err = format!("Erro de leitura no disco: {}", e);
+        println!("❌ {}", err);
+        err
+    })?;
+
+    // 3. Tentar parsear o JSON
+    let settings: ProjectSettings = serde_json::from_str(&content).map_err(|e| {
+        let err = format!("JSON Inválido ou campos faltando: {}", e);
+        println!("❌ {}", err);
+        err
+    })?;
+
+    println!("✅ Projeto '{}' carregado com sucesso!", settings.name);
+    Ok(settings)
+}
+
+
 
 #[tauri::command]
 async fn export_video(
@@ -1100,7 +1207,10 @@ fn main() {
             export_video,
             cancel_export,
             move_file,
-            copy_file
+            copy_file,
+            load_project_config,
+            save_project_config,
+            create_project_setup
            
         ])
         .run(tauri::generate_context!())
