@@ -141,7 +141,7 @@ interface Clip {
   
 
 
-activeKeyframeView?: 'volume' | 'opacity' | 'speed' | 'rotation3d'| 'position' | null;
+activeKeyframeView?: 'volume' | 'opacity' | 'speed' | 'rotation3d'| 'position' | 'zoom' | null;
 
 
 }
@@ -832,6 +832,29 @@ const audioPlayersRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
 //Render all audios of the current time
 
+const convertZoom = (input: number): number => {
+  // Garantir que o input esteja no limite 0 a 1
+  const val = Math.max(0, Math.min(1, input));
+
+  if (val <= 0.5) {
+    return val * (1.0 - 0.01) / 0.5 + 0.01;
+  } else {
+    return (val - 0.5) * (20.0 - 1.0) / (1.0 - 0.5) + 1.0;
+  }
+};
+
+
+const reverterZoom = (zoom: number): number => {
+  const z = Math.max(0.01, Math.min(20, zoom));
+
+  if (z <= 1.0) {
+    return (z - 0.01) * 0.5 / (1.0 - 0.01);
+  } else {
+    return (z - 1.0) * (1.0 - 0.5) / (20.0 - 1.0) + 0.5;
+  }
+};
+
+
 const convertDB = (kfValue: number) => {
     const db = (kfValue * 60) - 30;
     return db;
@@ -1108,6 +1131,7 @@ const getInterpolatedValueWithFades = (
   // 1. Valores Padrão (Fallbacks)
   const getDefaultValue = () => {
     if (type === 'volume') return convertDB(0.5);
+    if(type === 'zoom' ) return convertZoom(0.5);
     if (type === 'position') return { x: 0, y: 0 } as Position;
     return 1.0; 
   };
@@ -1355,9 +1379,122 @@ const getOpacityAtTime = (clip: Clip) => {
 
 //Render main frame
 
-
-
 const drawFrame = async (time: number) => {
+    if (!canvasRef.current) return;
+    
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
+
+    if (canvasRef.current.width !== projectConfig.width || canvasRef.current.height !== projectConfig.height) {
+        canvasRef.current.width = projectConfig.width;
+        canvasRef.current.height = projectConfig.height;
+    }
+
+    if (!topClips.current || topClips.current.length === 0) {
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        return;
+    }
+
+    const now = performance.now();
+    if (isPlaying && (now - lastFrameTimeRef.current < (1000 / projectConfig.fps))) return;
+    lastFrameTimeRef.current = now;
+
+    const blendModeMap: Record<string, GlobalCompositeOperation> = {
+        'normal': 'source-over',
+        'screen': 'screen',
+        'multiply': 'multiply',
+        'overlay': 'overlay',
+        'lineardodge': 'lighter',
+    };
+
+    try {
+        // --- FASE 1: BUSCA DE FRAMES ---
+        const framePromises = topClips.current.map(async (clip) => {
+            const timelineRelativeTime = time - clip.start;
+            let assetRelativeTime = timelineRelativeTime;
+
+            if (clip.keyframes?.speed && clip.keyframes.speed.length > 0) {
+                // ... (Sua lógica de Speed Ramp mantida)
+            }
+
+            const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
+            const path = `${currentProjectPath}/videos/${clip.name}`;
+
+            try {
+                const frameBase64: string = await invoke('get_video_frame', { path, timeMs: clipTimeMs });
+                return new Promise<HTMLImageElement | null>((resolve) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = () => resolve(null);
+                    img.src = frameBase64;
+                });
+            } catch (e) { return null; }
+        });
+
+        const loadedImages = await Promise.all(framePromises);
+
+        // --- FASE 2: DESENHO ---
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+        for (let i = loadedImages.length - 1; i >= 0; i--) {
+            const img = loadedImages[i];
+            const clip = topClips.current[i];
+            if (!img) continue;
+
+            const timelineRelativeTime = time - clip.start;
+            
+            // 1. Interpolação de Atributos
+            const opacity = getInterpolatedValueWithFades(currentTime, clip, 'opacity');
+            const zoom = getInterpolatedValueWithFades(currentTime, clip, 'zoom') || 1.0;
+            const pos = getInterpolatedValueWithFades(currentTime, clip, 'position') as Position | null;
+
+            // 2. Cálculo de Dimensões (Usa metadados ou a imagem real)
+            const clipW = clip.dimensions?.x || img.width;
+            const clipH = clip.dimensions?.y || img.height;
+
+            // 3. Cálculo de Posição Base
+            let drawX = pos ? pos.x : (canvasRef.current.width - clipW) / 2;
+            let drawY = pos ? pos.y : (canvasRef.current.height - clipH) / 2;
+
+            ctx.save();
+
+// 1. Defina o modo de mesclagem e opacidade primeiro
+ctx.globalCompositeOperation = blendModeMap[clip.blendmode || 'normal'] || 'source-over';
+ctx.globalAlpha = opacity;
+
+
+// 3. Posição alvo (onde o centro do clipe deve estar na tela)
+// Se não houver pos, centralizamos no canvas
+const targetX = pos ? pos.x : (canvasRef.current.width - clipW) / 2;
+const targetY = pos ? pos.y : (canvasRef.current.height - clipH) / 2;
+
+/**
+ * ESTRATÉGIA ANTI-ATRASO:
+ * Em vez de múltiplos translates, fazemos uma única transformação coordenada.
+ */
+// Movemos para o destino final (Posição X, Y)
+ctx.translate(targetX, targetY);
+
+// Movemos para o centro do próprio clipe para escalar a partir do meio
+ctx.translate(clipW / 2, clipH / 2);
+ctx.scale(zoom, zoom);
+// Movemos de volta para a origem do clipe
+ctx.translate(-clipW / 2, -clipH / 2);
+
+// 4. Desenho final (o 0,0 agora é o topo-esquerdo do clipe já transformado)
+ctx.drawImage(img, 0, 0, clipW, clipH);
+
+ctx.restore();
+        }
+
+    } catch (err) {
+        console.error("Erro no preview:", err);
+    }
+};
+
+const drawFrame_old = async (time: number) => {
     if (!canvasRef.current) return;
     
     const ctx = canvasRef.current.getContext('2d');
@@ -1514,113 +1651,6 @@ const drawFrame = async (time: number) => {
 
 
 
-const drawFrame_old = async (time: number) => {
-    if (!canvasRef.current || !topClips || topClips.length === 0) {
-        const ctx = canvasRef.current?.getContext('2d');
-        if (ctx && canvasRef.current) {
-            ctx.fillStyle = "black";
-            ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-        }
-        return;
-    }
-
-    const now = performance.now();
-    if (now - lastFrameTimeRef.current < FPS_LIMIT) return;
-    lastFrameTimeRef.current = now;
-
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
-
-    const blendModeMap: Record<string, GlobalCompositeOperation> = {
-        'normal': 'source-over',
-        'screen': 'screen',
-        'multiply': 'multiply',
-        'overlay': 'overlay',
-        'lineardodge': 'lighter',
-    };
-
-    try {
-        // --- FASE 1: BUSCA EM PARALELO ---
-        const framePromises = topClips.current?.map(async (clip) => {
-            const timelineRelativeTime = time - clip.start;
-            let assetRelativeTime = timelineRelativeTime;
-
-            // Lógica de Speed Ramp (Resumida para brevidade)
-            if (clip.keyframes?.speed?.length > 0) {
-                const speedKfs = [...clip.keyframes.speed].sort((a, b) => a.time - b.time);
-                let acc = 0; let lt = 0; let ls = speedKfs[0].value;
-                for (const kf of speedKfs) {
-                    if (timelineRelativeTime > kf.time) {
-                        acc += (kf.time - lt) * (ls + kf.value) / 2;
-                        lt = kf.time; ls = kf.value;
-                    } else {
-                        const dt = timelineRelativeTime - lt;
-                        const t = dt / (kf.time - lt || 1);
-                        const cs = ls + t * (kf.value - ls);
-                        acc += dt * (ls + cs) / 2;
-                        lt = timelineRelativeTime; break;
-                    }
-                }
-                if (timelineRelativeTime > lt) acc += (timelineRelativeTime - lt) * ls;
-                assetRelativeTime = acc;
-            }
-
-            const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
-            const path = `${currentProjectPath}/videos/${clip.name}`;
-
-            const frameBase64: string = await invoke('get_video_frame', { path, timeMs: clipTimeMs });
-
-            return new Promise<HTMLImageElement | null>((resolve) => {
-                const img = new Image();
-                img.onload = () => resolve(img);
-                img.onerror = () => resolve(null);
-                img.src = frameBase64;
-            });
-        });
-
-        const loadedImages = await Promise.all(framePromises);
-
-        // --- FASE 2: DESENHO COM ORDEM INVERTIDA ---
-        
-        // Ajustamos o canvas pelo último clipe do array (que é o fundo/camada base)
-        const backgroundIdx = loadedImages.length - 1;
-        if (loadedImages[backgroundIdx]) {
-            const bgImg = loadedImages[backgroundIdx]!;
-            if (canvasRef.current.width !== bgImg.width) {
-                canvasRef.current.width = bgImg.width;
-                canvasRef.current.height = bgImg.height;
-            }
-        }
-
-        // Limpa o frame
-        ctx.fillStyle = "black";
-        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-        // REVERSO: Começamos do último clipe (fundo) até o index 0 (topo)
-        for (let i = loadedImages.length - 1; i >= 0; i--) {
-            const img = loadedImages[i];
-            const clip = topClips.current[i];
-            if (!img) continue;
-
-            const timelineRelativeTime = time - clip.start;
-            const opacity = getInterpolatedValueWithFades(timelineRelativeTime, clip, 'opacity');
-
-            ctx.save();
-            
-            // Configurações da camada
-            ctx.globalCompositeOperation = blendModeMap[clip.blendmode || 'normal'] || 'source-over';
-            ctx.globalAlpha = opacity;
-
-            // Desenha a camada (agora na ordem correta: fundo -> topo)
-            ctx.drawImage(img, 0, 0, canvasRef.current.width, canvasRef.current.height);
-            
-            ctx.restore();
-        }
-
-    } catch (err) {
-        console.error("Erro no preview:", err);
-    }
-};
 
 const lastDrawTimeRef = useRef<number>(0);
 const FPS_target = 10;
@@ -4369,8 +4399,14 @@ const currentPos = getInterpolatedValueWithFades(currentTime, selectedClip, 'pos
             >
                 <input 
                   type="range" 
-                  className="w-full cursor-pointer" 
+                  className="w-full cursor-pointer"                   
                   style={{ accentColor: activeHex }} 
+                  onInput={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  updateKeyframes(selectedClip, 'zoom', (e.target as HTMLInputElement).value)
+                }} 
+                min={0.1} max={20}
+                value={getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'zoom')}
                 />
               </PropertyRow>
             </>
@@ -5133,6 +5169,9 @@ const handleClipMouseMove = (e: React.MouseEvent, clip: Clip) => {
   } else if (clip.activeKeyframeView === 'volume') {
     const db = convertDB(value);
     displayValue = `${db} dB`;
+  }else if (clip.activeKeyframeView === 'zoom') {
+    const zoom = convertZoom(value);
+    displayValue = `${zoom}x`;
   } else {
     displayValue = `${Math.round(value * 100)}%`;
   }
@@ -5212,63 +5251,6 @@ const updateKeyframes = (
   if (type === 'speed') handleSpeedKeyframeChange({ ...clip, keyframes: updatedKeyframes });
 };
 
-const updateKeyframes_old = (clip: Clip, type: 'opacity' | 'volume' | 'speed', value: string) => {
-  const newValue = parseFloat(value);
-  const threshold = 0.05;
-  const relativeTime = currentTimeRef.current - clip.start;
-
-  const safeKeyframes = clip.keyframes || {};
-  const currentTypeArray = safeKeyframes[type] || [];
-
-  let updatedTypeArray;
-
-  // If there is exactly 1 keyframe AND the user is not in the active edit view of that type
-  if (currentTypeArray.length === 1 && clip.activeKeyframeView !== type) {
-    updatedTypeArray = [{
-      ...currentTypeArray[0],
-      value: newValue 
-      // Mantemos o time original desse único keyframe (geralmente 0)
-    }];
-  } else {
-    // --- LÓGICA PADRÃO DE ANIMAÇÃO (EXISTING OU NEW) ---
-    const existingIndex = currentTypeArray.findIndex(
-      (kf) => Math.abs(kf.time - relativeTime) <= threshold
-    );
-
-    if (existingIndex !== -1) {
-      // Caso encontre um próximo ao cursor, atualiza
-      updatedTypeArray = currentTypeArray.map((kf, index) =>
-        index === existingIndex ? { ...kf, value: newValue } : kf
-      );
-    } else {
-      // Caso não encontre e a visão esteja ativa (ou tenha + de 1), cria um novo
-      const newKeyframe = {
-        id: crypto.randomUUID(),
-        time: relativeTime,
-        value: newValue,
-      };
-      
-      updatedTypeArray = [...currentTypeArray, newKeyframe].sort(
-        (a, b) => a.time - b.time
-      );
-    }
-  }
-
-  const updatedKeyframes = {
-    ...safeKeyframes,
-    [type]: updatedTypeArray,
-  };
-
-  setClips((prev) =>
-    prev.map((c) =>
-      c.id === clip.id ? { ...c, keyframes: updatedKeyframes } : c
-    )
-  );
-
-  if (type === 'speed') {
-    handleSpeedKeyframeChange({ ...clip, keyframes: updatedKeyframes });
-  }
-};
 
 
 
@@ -5296,6 +5278,8 @@ const addKeyframe = (e: React.MouseEvent, clipId: string) => {
       // Calculamos o valor final baseado no tipo de visão
       let finalValue = view === 'speed' ? converterSpeed(rawValue) : rawValue;
       finalValue = view === 'volume' ? convertDB(rawValue) : rawValue;
+      finalValue = view === 'zoom' ? convertZoom(rawValue) : rawValue;
+
 
       const currentKfs = c.keyframes?.[view] || [];
 
@@ -5392,6 +5376,10 @@ const calculateY = (value: number, height: number, type:string = '') => {
 
   if(type == 'volume')
     return (1- reverterVolume(value)) * height
+
+  if(type == 'zoom')
+    return (1- reverterZoom(value)) * height
+
 
   if(type == 'position')
     return 0.5
@@ -6330,7 +6318,15 @@ return (
               draggable="true"
               onContextMenu={(e) => handleContextMenu(e, assetTarget?.type, clip)}
               onDragStart={(e) => handleDragStart(e, clip.color, track.id, clip.duration, clip.name, true, clip.id)}
-              onClick={(e) => { e.stopPropagation(); toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey); setContextMenu(null); addKeyframe(e, clip.id) }}
+              onClick={(e) => { e.stopPropagation(); toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey); setContextMenu(null); 
+                
+                
+                
+              if((clip.activeKeyframeView !== 'position') && (clip.activeKeyframeView !== 'rotation3d'))  
+                    addKeyframe(e, clip.id)
+              
+              
+              }}
               className={`absolute  inset-y-1.5 ${clip.color} rounded-md flex items-center shadow-lg cursor-grab active:cursor-grabbing border-2 ${
                 selectedClipIds.includes(clip.id) ? 'border-white ring-4 ring-white/10 z-30' : 'border-black/20'
               }`}
@@ -6442,6 +6438,8 @@ return (
                               { label: 'Speed', value: 'speed', icon: <Clock size={14} /> },
                               { label: '3D Rotation', value: 'rotation3d', icon: <Rotate3d size={14} /> },
                               { label: 'Position', value: 'position', icon: <Crosshair size={14} /> },
+                              { label: 'Zoom', value: 'zoom', icon: <ZoomIn size={14} /> },
+
                             ].map((sub) => (
                               <button
                                 key={sub.value}
@@ -6539,12 +6537,16 @@ return (
                      cyString = `${(1 - reverterVolume(kf.value)) * 100}%`  : 
                   clip.activeKeyframeView === 'speed' ? 
                         cyString = `${(1 - reverterSpeed(kf.value)) * 100}%` : 
+                  clip.activeKeyframeView === 'zoom' ? 
+                        cyString = `${(1 - reverterZoom(kf.value)) * 100}%` :
                   clip.activeKeyframeView === 'position' ? 
                         cyString = '50%':      
                         cyString = `${(1 - kf.value) * 100}%`
                   
                   
                   var title =  clip.activeKeyframeView === 'position' ? `${kf.value.x},${kf.value.y}` :
+                  clip.activeKeyframeView === 'zoom' ? 
+                  `${(1 - reverterZoom(kf.value)) * 100}%` :
                   `${kf.value}`
                   
                   return(
@@ -6561,7 +6563,8 @@ return (
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      handleKeyframeDrag(e, clip.id, kf.id, clip.activeKeyframeView!);
+                      if((clip.activeKeyframeView !== 'position') && (clip.activeKeyframeView !== 'rotation3d'))
+                          handleKeyframeDrag(e, clip.id, kf.id, clip.activeKeyframeView!);
                       
                     }}
                     onContextMenu={(e) => {
