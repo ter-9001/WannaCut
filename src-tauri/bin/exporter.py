@@ -66,7 +66,6 @@ def get_speed_interpolator(speed_kfs):
     return timeline_to_asset_time
 
 def apply_blending(bg, fg, mode):
-    """ Implementação matemática de blend modes via NumPy """
     if mode == 'normal' or mode is None: return fg
     b = bg.astype(float) / 255.0
     f = fg.astype(float) / 255.0
@@ -95,7 +94,7 @@ def export_video():
         target_size = (1920, 1080) 
 
         processed_clips = []
-        # Index 0 é o topo no seu JSON. MoviePy precisa do fundo primeiro.
+        # Invertemos a lista do JSON: o primeiro do JSON deve ser o último a ser desenhado (topo)
         reversed_clips = list(reversed(clips_data))
 
         for c in reversed_clips:
@@ -129,39 +128,28 @@ def export_video():
             clip = clip.transform(opacity_tr)
 
             # Audio Volume
-            vol_kfs = sorted(c.get('keyframes', {}).get('volume', []), key=lambda x: x['time'])
             if not is_image and clip.audio:
                 vol_kfs = sorted(c.get('keyframes', {}).get('volume', []), key=lambda x: x['time'])
-                
                 def vol_tr(get_f, t):
                     chunk = get_f(t)
-                    
-                    if vol_kfs:
-                        db_val = np.interp(t, [k['time'] for k in vol_kfs], [k['value'] for k in vol_kfs])
-                    else:
-                        db_val = 0.0
-                    
+                    db_val = np.interp(t, [k['time'] for k in vol_kfs], [k['value'] for k in vol_kfs]) if vol_kfs else 0.0
                     gain = 10 ** (db_val / 20.0)
-                    
-                    if isinstance(gain, np.ndarray):
-                        return chunk * gain[:, np.newaxis]
-                    return chunk * gain
-
+                    return chunk * (gain[:, np.newaxis] if isinstance(gain, np.ndarray) else gain)
                 clip.audio = clip.audio.transform(vol_tr)
 
-            clip = clip.resized(height=target_size[1])
-            if clip.w > target_size[0]: clip = clip.resized(width=target_size[0])
-            clip = clip.with_start(c['start']).with_position("center")
+            # Redimensionamento opcional (se desejar manter o tamanho original do clip, remova o .resized)
+            # clip = clip.resized(height=target_size[1]) 
             
-            # Guardamos o blendmode e informações de tempo para a composição manual
+            clip = clip.with_start(c['start'])
+            
+            # Atributos customizados para o composer
             clip.my_blend_mode = c.get('blendmode', 'normal')
+            clip.my_pos = c.get('position', [0, 0]) # [x, y]
             processed_clips.append(clip)
 
-        # COMPOSIÇÃO MANUAL VIA CUSTOM FRAME GENERATOR
         duration = max(c['start'] + c['duration'] for c in clips_data)
 
         def custom_composer(t):
-            # Frame base (fundo preto)
             final_f = np.zeros((target_size[1], target_size[0], 3), dtype='uint8')
             
             for clip in processed_clips:
@@ -169,24 +157,30 @@ def export_video():
                     rel_t = t - clip.start
                     fg_f = clip.get_frame(rel_t)
                     
-                    # Garantir que o frame cabe ou está centralizado
                     h, w, _ = fg_f.shape
-                    y_off = (target_size[1] - h) // 2
-                    x_off = (target_size[0] - w) // 2
+                    x_start, y_start = clip.my_pos
                     
-                    # ROI do Background
-                    bg_roi = final_f[y_off:y_off+h, x_off:x_off+w]
+                    # Cálculo de intersecção para evitar erro fora da tela
+                    x1 = max(0, x_start)
+                    y1 = max(0, y_start)
+                    x2 = min(target_size[0], x_start + w)
+                    y2 = min(target_size[1], y_start + h)
                     
-                    # Aplica o Blend
-                    final_f[y_off:y_off+h, x_off:x_off+w] = apply_blending(bg_roi, fg_f, clip.my_blend_mode)
+                    if x2 > x1 and y2 > y1:
+                        # Recorte do foreground caso esteja parcialmente fora
+                        fg_x1 = x1 - x_start
+                        fg_y1 = y1 - y_start
+                        fg_x2 = fg_x1 + (x2 - x1)
+                        fg_y2 = fg_y1 + (y2 - y1)
+                        
+                        fg_roi = fg_f[fg_y1:fg_y2, fg_x1:fg_x2]
+                        bg_roi = final_f[y1:y2, x1:x2]
+                        
+                        final_f[y1:y2, x1:x2] = apply_blending(bg_roi, fg_roi, clip.my_blend_mode)
             
             return final_f
 
-        # Criamos um clipe vazio com a duração correta e injetamos nossa função de frames
-        # Usamos um VideoFileClip qualquer como "dummy" ou criamos um Composite apenas para extrair o áudio
         comp_with_audio = CompositeVideoClip(processed_clips, size=target_size)
-        
-        # A forma correta de substituir o gerador de frames no MoviePy 2.x
         final_video = comp_with_audio.transform(lambda get_f, t: custom_composer(t))
 
         final_video.write_videofile(

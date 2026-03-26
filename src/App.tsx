@@ -107,9 +107,8 @@ interface Position
 
 interface Rotation
 {
-  x: number;
-  y: number;
-  z: number;
+  rot: number;
+  rot3d: number;
 }
 
 interface Clip {
@@ -682,6 +681,7 @@ const startExport = async () => {
     await invoke('export_video', {
       projectPath: currentProjectPath,
       exportPath: targetPath, 
+      projectDimensions: { width: projectConfig.width || 1980, height: projectConfig.height || 1080 },
       clips: clips_format
     });
 
@@ -1122,8 +1122,95 @@ const getInterpolatedValue = (time: number, keyframes: Keyframe[]): number => {
   return 0.5;
 };
 
-
 const getInterpolatedValueWithFades = (
+  timeFull: number, 
+  clip: any, 
+  type: 'opacity' | 'volume' | 'speed' | 'zoom' | 'position' | 'rotation3d'
+): any => {
+  
+  // 1. Valores Padrão (Fallbacks) - Adicionado rotation3d
+  const getDefaultValue = () => {
+    switch (type) {
+      case 'volume': return convertDB(0.5);
+      case 'zoom': return convertZoom(0.5);
+      case 'position': return { x: 0, y: 0 };
+      case 'rotation3d': return { x: 0, y: 0 }; // x: rot, y: rot3d
+      case 'speed': return 1.0;
+      case 'opacity': return 1.0;
+      default: return 0;
+    }
+  };
+
+  const time = timeFull - clip.start;
+  const kfArray = clip.keyframes?.[type];
+  let baseValue = getDefaultValue();
+
+  // Se não houver keyframes, retorna o padrão imediatamente
+  if (!kfArray || kfArray.length === 0) {
+    return applyFades(baseValue, time, clip, type);
+  }
+
+  const sorted = [...kfArray].sort((a, b) => a.time - b.time);
+
+  // 2. Lógica de Interpolação
+  if (time <= sorted[0].time) {
+    baseValue = sorted[0].value;
+  } else if (time >= sorted[sorted.length - 1].time) {
+    baseValue = sorted[sorted.length - 1].value;
+  } else {
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const startKf = sorted[i];
+      const endKf = sorted[i + 1];
+
+      if (time >= startKf.time && time <= endKf.time) {
+        const rangeTime = endKf.time - startKf.time;
+        const progress = rangeTime === 0 ? 0 : (time - startKf.time) / rangeTime;
+
+        // LÓGICA PARA OBJETOS (Position e Rotation3D)
+        if (type === 'position' || type === 'rotation3d') {
+          const start = startKf.value as { x: number, y: number };
+          const end = endKf.value as { x: number, y: number };
+          baseValue = {
+            x: start.x + progress * (end.x - start.x),
+            y: start.y + progress * (end.y - start.y)
+          };
+        } else {
+          // LÓGICA PARA NÚMEROS (Opacity, Speed, Zoom, Volume)
+          baseValue = (startKf.value as number) + progress * ((endKf.value as number) - (startKf.value as number));
+        }
+        break;
+      }
+    }
+  }
+
+  return applyFades(baseValue, time, clip, type);
+};
+
+/**
+ * Função auxiliar isolada para aplicar os Fades de entrada e saída
+ */
+const applyFades = (value: any, time: number, clip: any, type: string) => {
+  if (type === 'opacity' || type === 'volume') {
+    const isVideo = type === 'opacity';
+    const fadeInDuration = isVideo ? (clip.fadein || 0) : (clip.fadeinAudio || 0);
+    const fadeoutDuration = isVideo ? (clip.fadeout || 0) : (clip.fadeoutAudio || 0);
+    
+    let fadeModifier = 1.0;
+    
+    if (time < fadeInDuration && fadeInDuration > 0) {
+      fadeModifier = time / fadeInDuration;
+    } else if (time > (clip.duration - fadeoutDuration) && fadeoutDuration > 0) {
+      const timeInFadeOut = time - (clip.duration - fadeoutDuration);
+      fadeModifier = 1.0 - (timeInFadeOut / fadeoutDuration);
+    }
+
+    fadeModifier = Math.max(0, Math.min(1, fadeModifier));
+    return (value as number) * fadeModifier;
+  }
+  return value;
+};
+
+const getInterpolatedValueWithFades_old3 = (
   timeFull: number, 
   clip: any, 
   type: 'opacity' | 'volume' | 'speed' | 'zoom' | 'position'
@@ -1194,145 +1281,6 @@ const getInterpolatedValueWithFades = (
   return baseValue;
 };
 
-
-const getInterpolatedValueWithFades_old2 = (
-  timeFull: number, 
-  clip: any, 
-  type: 'opacity' | 'volume' | 'speed' | 'zoom'
-): number => {
-  // 1. Definição de Valores Padrão (Fallbacks)
-  const getDafaultValue = () => {
-    if (type === 'volume') return convertDB(0.5); // Seu padrão para áudio
-    return 1.0; // Padrão para opacity, speed e zoom
-  };
-
-  const time = timeFull - clip.start; // Tempo local dentro do clipe
-  const kfArray = clip.keyframes?.[type]; // Pega o array correto baseado no type pedido
-  
-  // 2. Cálculo do Valor Base (Interpolação)
-  let baseValue = getDafaultValue();
-
-  if (kfArray && kfArray.length > 0) {
-    const sorted = [...kfArray].sort((a, b) => a.time - b.time);
-
-    // Tempo antes do primeiro keyframe
-    if (time <= sorted[0].time) {
-      baseValue = sorted[0].value;
-    } 
-    // Tempo depois do último keyframe
-    else if (time >= sorted[sorted.length - 1].time) {
-      baseValue = sorted[sorted.length - 1].value;
-    } 
-    // Interpolação entre dois pontos
-    else {
-      for (let i = 0; i < sorted.length - 1; i++) {
-        const startKf = sorted[i];
-        const endKf = sorted[i + 1];
-        if (time >= startKf.time && time <= endKf.time) {
-          const rangeTime = endKf.time - startKf.time;
-          if (rangeTime === 0) {
-             baseValue = startKf.value;
-          } else {
-             const progress = (time - startKf.time) / rangeTime;
-             baseValue = startKf.value + progress * (endKf.value - startKf.value);
-          }
-          break;
-        }
-      }
-    }
-  }
-
-  // 3. Aplicação de Fades (Apenas para Opacity e Volume)
-  // Nota: Geralmente não aplicamos fade em Speed ou Zoom, pois causaria comportamentos estranhos
-  if (type === 'opacity' || type === 'volume') {
-    const isVideo = type === 'opacity';
-    const fadeInDuration = isVideo ? (clip.fadein || 0) : (clip.fadeinAudio || 0);
-    const fadeOutDuration = isVideo ? (clip.fadeout || 0) : (clip.fadeoutAudio || 0);
-    
-    let fadeModifier = 1.0;
-
-    // Fade In
-    if (time < fadeInDuration && fadeInDuration > 0) {
-      fadeModifier = time / fadeInDuration;
-    } 
-    // Fade Out
-    else if (time > (clip.duration - fadeOutDuration) && fadeOutDuration > 0) {
-      const timeInFadeOut = time - (clip.duration - fadeOutDuration);
-      fadeModifier = 1.0 - (timeInFadeOut / fadeOutDuration);
-    }
-
-    fadeModifier = Math.max(0, Math.min(1, fadeModifier));
-    return baseValue * fadeModifier;
-  }
-
-  // Para Speed e Zoom, retornamos apenas o valor interpolado sem fades
-  return baseValue;
-};
-
-
-
-const getInterpolatedValueWithFades_old = (
-  timeFull: number, 
-  clip: any, 
-  type: 'opacity' | 'volume' | 'speed' | 'zoom'
-): number => {
-  // 1. Identificar quais campos de fade usar baseado no tipo
-  const isVideo = knowTypeByAssetName(clip.name, true);
-  const kfArray = isVideo ? clip.keyframes?.opacity : clip.keyframes?.volume;
-
-  const time = timeFull - clip.start; // Tempo decorrido dentro do clipe (segundos)
-
-  
-  // Tempos de fade (relativos ao início do clip, onde time 0 é o começo do clip)
-  const fadeInDuration = isVideo ? (clip.fadein || 0) : (clip.fadeinAudio || 0);
-  const fadeOutDuration = isVideo ? (clip.fadeout || 0) : (clip.fadeoutAudio || 0);
-  
-  // 2. Calcular o Valor Base via Interpolação (sua lógica original)
-  let baseValue = 1.0; // Valor padrão caso não haja keyframes
-
-  if (kfArray && kfArray.length > 0) {
-    const sorted = [...kfArray].sort((a, b) => a.time - b.time);
-
-    if (time <= sorted[0].time) {
-      baseValue = sorted[0].value;
-    } else if (time >= sorted[sorted.length - 1].time) {
-      baseValue = sorted[sorted.length - 1].value;
-    } else {
-      for (let i = 0; i < sorted.length - 1; i++) {
-        const startKf = sorted[i];
-        const endKf = sorted[i + 1];
-        if (time >= startKf.time && time <= endKf.time) {
-          const rangeTime = endKf.time - startKf.time;
-          const progress = (time - startKf.time) / rangeTime;
-          baseValue = startKf.value + progress * (endKf.value - startKf.value);
-          break;
-        }
-      }
-    }
-  } else {
-    // Se não houver keyframes, o padrão costuma ser 1.0 (total) ou 0.5 conforme seu código
-    baseValue = 1; 
-  }
-
-  // 3. Aplicar Modificadores de Fade
-  let fadeModifier = 1.0;
-
-  // Fade In (Início do clip)
-  if (time < fadeInDuration && fadeInDuration > 0) {
-    fadeModifier = time / fadeInDuration;
-  } 
-  // Fade Out (Fim do clip)
-  else if (time > (clip.duration - fadeOutDuration) && fadeOutDuration > 0) {
-    const timeInFadeOut = time - (clip.duration - fadeOutDuration);
-    fadeModifier = 1.0 - (timeInFadeOut / fadeOutDuration);
-  }
-
-  // Garante que o modifier não saia do range 0-1 por erro de precisão
-  fadeModifier = Math.max(0, Math.min(1, fadeModifier));
-
-  // 4. Retorno Final: O valor do keyframe multiplicado pelo efeito de Fade
-  return baseValue * fadeModifier;
-};
 
 useEffect(() => {
   setCurrentTime(playheadPos/pixelsPerSecond)
@@ -1443,7 +1391,6 @@ const drawFrame = async (time: number) => {
             const clip = topClips.current[i];
             if (!img) continue;
 
-            const timelineRelativeTime = time - clip.start;
             
             // 1. Interpolação de Atributos
             const opacity = getInterpolatedValueWithFades(currentTime, clip, 'opacity');
@@ -1487,161 +1434,6 @@ ctx.translate(-clipW / 2, -clipH / 2);
 ctx.drawImage(img, 0, 0, clipW, clipH);
 
 ctx.restore();
-        }
-
-    } catch (err) {
-        console.error("Erro no preview:", err);
-    }
-};
-
-const drawFrame_old = async (time: number) => {
-    if (!canvasRef.current) return;
-    
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
-
-    // --- FASE 0: SETUP DO CANVAS ---
-    // Ajusta as dimensões do canvas de acordo com o projeto (1920x1080, etc)
-    if (canvasRef.current.width !== projectConfig.width || canvasRef.current.height !== projectConfig.height) {
-        canvasRef.current.width = projectConfig.width;
-        canvasRef.current.height = projectConfig.height;
-    }
-
-
-    // Se não houver clipes, limpa e sai
-    if (!topClips.current || topClips.current.length === 0) {
-        ctx.fillStyle = "black";
-        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-        return;
-    }
-
-    
-
-    const now = performance.now();
-    if ( isPlaying && (now - lastFrameTimeRef.current < (1000 / projectConfig.fps))) return
-    
-    console.log('tC',topClips.current)
-    
-    
-    lastFrameTimeRef.current = now;
-    
-
-
-
-    const blendModeMap: Record<string, GlobalCompositeOperation> = {
-        'normal': 'source-over',
-        'screen': 'screen',
-        'multiply': 'multiply',
-        'overlay': 'overlay',
-        'lineardodge': 'lighter',
-    };
-
-    // Função auxiliar para interpolar posição (X e Y)
-    const getInterpolatedPosition = (timelineTime: number, clip: Clip): { x: number, y: number } | null => {
-        const kfs = clip.keyframes?.position;
-        if (!kfs || kfs.length === 0) return null;
-
-        const sortedKfs = [...kfs].sort((a, b) => a.time - b.time);
-        
-        if (timelineTime <= sortedKfs[0].time) return sortedKfs[0].value as Position;
-        if (timelineTime >= sortedKfs[sortedKfs.length - 1].time) return sortedKfs[sortedKfs.length - 1].value as Position;
-
-        for (let i = 0; i < sortedKfs.length - 1; i++) {
-            const start = sortedKfs[i];
-            const end = sortedKfs[i + 1];
-
-            if (timelineTime >= start.time && timelineTime <= end.time) {
-                const t = (timelineTime - start.time) / (end.time - start.time);
-                const startPos = start.value as Position;
-                const endPos = end.value as Position;
-                
-                return {
-                    x: startPos.x + t * (endPos.x - startPos.x),
-                    y: startPos.y + t * (endPos.y - startPos.y)
-                };
-            }
-        }
-        return null;
-    };
-
-    try {
-        // --- FASE 1: BUSCA DE FRAMES ---
-        const framePromises = topClips.current.map(async (clip) => {
-            const timelineRelativeTime = time - clip.start;
-            let assetRelativeTime = timelineRelativeTime;
-
-            // Lógica de Speed Ramp
-            if (clip.keyframes?.speed && clip.keyframes.speed.length > 0) {
-                const speedKfs = [...clip.keyframes.speed].sort((a, b) => a.time - b.time);
-                let acc = 0; let lt = 0; let ls = (speedKfs[0].value as number);
-                for (const kf of speedKfs) {
-                    const kfVal = kf.value as number;
-                    if (timelineRelativeTime > kf.time) {
-                        acc += (kf.time - lt) * (ls + kfVal) / 2;
-                        lt = kf.time; ls = kfVal;
-                    } else {
-                        const dt = timelineRelativeTime - lt;
-                        const t = dt / (kf.time - lt || 1);
-                        const cs = ls + t * (kfVal - ls);
-                        acc += dt * (ls + cs) / 2;
-                        lt = timelineRelativeTime; break;
-                    }
-                }
-                if (timelineRelativeTime > lt) acc += (timelineRelativeTime - lt) * ls;
-                assetRelativeTime = acc;
-            }
-
-            const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
-            const path = `${currentProjectPath}/videos/${clip.name}`;
-
-            try {
-                const frameBase64: string = await invoke('get_video_frame', { path, timeMs: clipTimeMs });
-                return new Promise<HTMLImageElement | null>((resolve) => {
-                    const img = new Image();
-                    img.onload = () => resolve(img);
-                    img.onerror = () => resolve(null);
-                    img.src = frameBase64;
-                });
-            } catch (e) { return null; }
-        });
-
-        const loadedImages = await Promise.all(framePromises);
-
-        // --- FASE 2: DESENHO ---
-        ctx.fillStyle = "black";
-        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-        // Desenha do fundo (fim do array) para o topo (index 0)
-        for (let i = loadedImages.length - 1; i >= 0; i--) {
-            const img = loadedImages[i];
-            const clip = topClips.current[i];
-            if (!img) continue;
-
-            const timelineRelativeTime = time - clip.start;
-            const opacity = getInterpolatedValueWithFades(timelineRelativeTime, clip, 'opacity');
-            
-            // Pega posição interpolada ou centraliza
-            const pos = getInterpolatedPosition(timelineRelativeTime, clip);
-            
-            let drawX, drawY;
-
-            if (pos) {
-                drawX = pos.x;
-                drawY = pos.y;
-            } else {
-                // Centralização automática (Baseado no tamanho do clipe vs tamanho do Canvas)
-                drawX = (canvasRef.current.width - img.width) / 2;
-                drawY = (canvasRef.current.height - img.height) / 2;
-            }
-
-            ctx.save();
-            ctx.globalCompositeOperation = blendModeMap[clip.blendmode || 'normal'] || 'source-over';
-            ctx.globalAlpha = opacity;
-
-            // Desenha o frame na posição calculada
-            ctx.drawImage(img, drawX, drawY);
-            
-            ctx.restore();
         }
 
     } catch (err) {
@@ -2775,18 +2567,7 @@ const seekTo = (newTime: number) => {
     // 4. If playback is paused, force a frame draw on the Canvas
     if (!isPlaying) {
       drawFrame(newTime);
-      
-      // 5. Synchronize audio for "Scrubbing" (optional)
-      /*
-      
-      audioPlayersRef.current.forEach((player, id) => {
-        const clip = tracks.flatMap(t => t.clips).find(c => c.id === id);
-        if (clip) {
-          // Calculate the internal audio time relative to the timeline position
-          player.currentTime = (newTime - clip.start) + (clip.beginmoment || 0);
-        }
-      });
-      */
+     
     }
   };
 
@@ -4308,8 +4089,9 @@ const PropertiesAside = () => {
   )|| false;
 
 const currentPos = getInterpolatedValueWithFades(currentTime, selectedClip, 'position') as Position;
+const rotation3d = getInterpolatedValueWithFades(currentTime, selectedClip, 'rotation3d') as Rotation;
 
-
+console.log('rotation3d', rotation3d)
 
 
   return (
@@ -4517,10 +4299,30 @@ const currentPos = getInterpolatedValueWithFades(currentTime, selectedClip, 'pos
           {(isVideo || isText) && (
             <div className="grid grid-cols-2 gap-2 mt-2">
               <PropertyRow label="Rotation" activeColor={activeHex}>
-                <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+                <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none"
+                min="0"
+                max="360"
+                defaultValue= {Math.round(rotation3d.x)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    updateKeyframes(selectedClip, 'rotation3d', { x: parseFloat(e.currentTarget.value) });
+                  }
+                  }}
+                onBlur={(e) => updateKeyframes(selectedClip, 'rotation3d', { x: parseFloat(e.currentTarget.value) })}
+                />
               </PropertyRow>
               <PropertyRow label="3D Rot" activeColor={activeHex}>
-                <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+                <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none"
+                min="0"
+                max="360"
+                defaultValue= {Math.round(rotation3d.y)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    updateKeyframes(selectedClip, 'rotation3d', { y: parseFloat(e.currentTarget.value) });
+                  }
+                  }}
+                onBlur={(e) => updateKeyframes(selectedClip, 'rotation3d', { y: parseFloat(e.currentTarget.value) })}
+                />
               </PropertyRow>
             </div>
           )}
@@ -5172,7 +4974,12 @@ const handleClipMouseMove = (e: React.MouseEvent, clip: Clip) => {
   }else if (clip.activeKeyframeView === 'zoom') {
     const zoom = convertZoom(value);
     displayValue = `${zoom}x`;
-  } else {
+  }else if ((clip.activeKeyframeView === 'position') || 
+  (clip.activeKeyframeView === 'rotation3d')) {
+    displayValue = `Use the edit mode on preview player`;
+  }
+  
+  else {
     displayValue = `${Math.round(value * 100)}%`;
   }
 
@@ -5184,7 +4991,95 @@ const handleClipMouseMove = (e: React.MouseEvent, clip: Clip) => {
   });
 };
 
-const updateKeyframes = (
+
+
+const updateKeyframes= (
+  clip: Clip, 
+  type: 'opacity' | 'volume' | 'speed' | 'position' | 'rotation3d' | 'zoom', 
+  newValue: number | { x?: number, y?: number, z?: number }
+) => {
+  const threshold = 0.05;
+  const relativeTime = currentTimeRef.current - clip.start;
+  const safeKeyframes = clip.keyframes || {};
+  const currentTypeArray = [...(safeKeyframes[type] || [])];
+
+  // 1. Define o valor padrão baseado no tipo
+  const getDefaultValue = () => {
+    switch (type) {
+      case 'position': return { x: 0, y: 0 };
+      case 'rotation3d': return { x: 0, y: 0 }; // x = rot, y = rot3d
+      case 'zoom': return 1.0;
+      case 'speed': return 1.0;
+      case 'opacity': return 1.0;
+      default: return 0;
+    }
+  };
+
+  // 2. Função para mesclar valores (Merge)
+  const getUpdatedValue = (oldValue: any) => {
+    if (typeof newValue === 'object' && newValue !== null) {
+      const base = oldValue || getDefaultValue();
+      return { ...base, ...newValue };
+    }
+    return newValue;
+  };
+
+  let updatedTypeArray: Keyframe[];
+
+  // LÓGICA DE ATUALIZAÇÃO DA TRACK
+  
+  // CASO 0: Track vazia - Cria o primeiro keyframe no tempo 0
+  // CASO 0: Inicialização
+  if ((currentTypeArray.length === 0) && (clip.activeKeyframeView !== type)) {
+    updatedTypeArray = [{
+      id: crypto.randomUUID(),
+      time: 0,
+      value: getUpdatedValue(type === 'position' ? { x: 0, y: 0 } : type === 'rotation3d' ? { x: 0, y: 0} : 1)
+    }];
+  }
+  // CASO 1: Ajuste Global (Apenas 1 KF e o usuário não está no modo "animação" de KFs)
+  else if (currentTypeArray.length === 1 && clip.activeKeyframeView !== type) {
+    updatedTypeArray = [{
+      ...currentTypeArray[0],
+      value: getUpdatedValue(currentTypeArray[0].value)
+    }];
+  } 
+  // CASO 2: Modo Animação (Múltiplos KFs ou gravando no tempo atual)
+  else {
+    const existingIndex = currentTypeArray.findIndex(
+      (kf) => Math.abs(kf.time - relativeTime) <= threshold
+    );
+
+    if (existingIndex !== -1) {
+      // Atualiza KF existente
+      updatedTypeArray = currentTypeArray.map((kf, index) =>
+        index === existingIndex ? { ...kf, value: getUpdatedValue(kf.value) } : kf
+      );
+    } else {
+      // Cria novo KF no tempo atual
+      const newKeyframe = {
+        id: crypto.randomUUID(),
+        time: relativeTime,
+        value: getUpdatedValue(null),
+      };
+      updatedTypeArray = [...currentTypeArray, newKeyframe].sort((a, b) => a.time - b.time);
+    }
+  }
+
+  // 3. Persistência
+  const updatedKeyframes = { ...safeKeyframes, [type]: updatedTypeArray };
+
+  setClips((prev) =>
+    prev.map((c) => c.id === clip.id ? { ...c, keyframes: updatedKeyframes } : c)
+  );
+
+  // Gatilhos específicos
+  if (type === 'speed') {
+    handleSpeedKeyframeChange({ ...clip, keyframes: updatedKeyframes });
+  }
+};
+
+const updateKeyframes_old = (
   clip: Clip, 
   type: 'opacity' | 'volume' | 'speed' | 'position' | 'rotation3d' | 'zoom', 
   newValue: number | { x?: number, y?: number, z?: number }
@@ -5381,7 +5276,7 @@ const calculateY = (value: number, height: number, type:string = '') => {
     return (1- reverterZoom(value)) * height
 
 
-  if(type == 'position')
+  if((type == 'position') || (type == 'rotation3d'))
     return 0.5
 
   
@@ -5991,7 +5886,7 @@ return (
 
                             //variaveis temporarias 
 
-                            const scale = clip?.scale || 1
+                            const scale = getInterpolatedValueWithFades(currentTimeRef.current, clip , 'zoom') || 1
                             const clipWidth = clip?.dimentions?.x || projectConfig.width
                             const clipHeight = clip?.dimentions?.y|| projectConfig.height
 
@@ -6379,7 +6274,7 @@ return (
                 
 
                       <div 
-                        className="fixed z-50 min-w-[200px] bg-zinc-900/95 backdrop-blur-xl border border-white/10 shadow-2xl rounded-lg py-1.5 animate-in fade-in zoom-in duration-100"
+                        className="fixed z-50 min-w-[200px] bg-zinc-900/95 backdrop-blur-xl border border-white/10 shadow-2xl rounded-lg py-1.5 animate-in fade-in zoom-in duration-100 "
                         style={{ top: adjustedY, left: adjustedX }}
                       >
                         {/* Opção: Separate/Recover Audio (Apenas Vídeo) */}
@@ -6429,8 +6324,10 @@ return (
 
                           {/* Submenu Lateral */}
                           <div className="absolute left-[calc(100%-4px)] top-[-6px] invisible group-hover:visible opacity-0 group-hover:opacity-100
-                                          min-w-[160px] bg-zinc-900 border border-white/10 shadow-2xl rounded-lg py-1.5 
-                                          transition-all duration-150 transform translate-x-1 group-hover:translate-x-2">
+                          min-w-[160px] bg-zinc-900 border border-white/10 shadow-2xl rounded-lg py-1.5 
+                          transition-all duration-150 transform translate-x-1 group-hover:translate-x-2
+                          max-h-[100px] overflow-y-auto scrollbar-thin scrollbar-thumb-cyan-700
+                          ">
                             
                             {[
                               { label: 'Volume', value: 'volume', icon: <Volume2 size={14} /> },
@@ -6540,11 +6437,14 @@ return (
                   clip.activeKeyframeView === 'zoom' ? 
                         cyString = `${(1 - reverterZoom(kf.value)) * 100}%` :
                   clip.activeKeyframeView === 'position' ? 
-                        cyString = '50%':      
+                        cyString = '50%':
+                  clip.activeKeyframeView === 'rotation3d' ? 
+                        cyString = '50%': 
                         cyString = `${(1 - kf.value) * 100}%`
                   
                   
-                  var title =  clip.activeKeyframeView === 'position' ? `${kf.value.x},${kf.value.y}` :
+                  var title =  clip.activeKeyframeView === 'position' ? `X: ${kf.value.x},Y: ${kf.value.y}` :
+                  clip.activeKeyframeView === 'rotation3d' ? `Rot: ${kf.value.rot},Rot3D: ${kf.value.rot3d}`:
                   clip.activeKeyframeView === 'zoom' ? 
                   `${(1 - reverterZoom(kf.value)) * 100}%` :
                   `${kf.value}`

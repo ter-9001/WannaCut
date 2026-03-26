@@ -117,6 +117,7 @@ use tauri::Emitter; // Adicione este import no topo
 struct ExportPayload {
     export_path: String,
     total_duration: f64,
+    project_dimentions: Dimensions,
     clips: Vec<Clip>,
 }
 
@@ -279,6 +280,7 @@ async fn export_video(
     state: tauri::State<'_, ExportState>,
     project_path: String,
     export_path: String,
+    project_dimensions: serde_json::Value,
     clips: serde_json::Value,
 ) -> Result<(), String> {
     
@@ -286,6 +288,7 @@ async fn export_video(
     let config_data = serde_json::json!({
         "project_path": project_path,
         "export_path": export_path,
+        "project_dimensions": project_dimensions,
         "clips": clips
     });
 
