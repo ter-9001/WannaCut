@@ -59,12 +59,18 @@ import {
   BrushCleaning,
   DiamondPlus,
   ChevronDown,
-  Crosshair
+  Crosshair,
+  ArrowBigUpDash,
+  ArrowUp
   
 } from 'lucide-react';
 
 import Waveform from "@/components/Waveform";
 import ProjectSettingsModal from "@/components/ProjectSettingsModal";
+import { PropertiesAside } from '@/components/PropertiesAside';
+import { ItensAside } from './components/ItensAside';
+
+
 
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
@@ -268,6 +274,103 @@ const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
   }
   selectedClipIdRef.current = null; // Clicou no vazio
 };
+
+
+const transferClipsToNewTrackZero = (targetTrackId: number) => {
+  setTracks(prevTracks => {
+    const shiftedTracks = prevTracks.map(track => ({
+        ...track,
+        id: track.id + 1
+      }));
+    
+
+    const targetTrack = prevTracks.find(t => t.id === targetTrackId);
+    
+    const newTrackZero: Tracks = {
+      id: 0,
+      type: targetTrack?.type || 'video', // Padrão video se não achar
+      lock: false,
+      mute: false
+    };
+
+    return [newTrackZero, ...shiftedTracks];
+  });
+
+  setClips(prevClips => {
+    return prevClips.map(clip => {
+      let currentClipTrackId = clip.trackId;
+
+      let newTrackId = currentClipTrackId + 1;
+
+      if (currentClipTrackId === targetTrackId) {
+        newTrackId = 0;
+      }
+
+      return {
+        ...clip,
+        trackId: newTrackId
+      };
+    });
+  });
+};
+
+
+const moveTrackDownAndShiftOthers = (targetTrackId: number) => {
+  // 1. Encontrar a track que tem o maior ID, mas que ainda é menor que o ID alvo
+  const sortedTracks = [...tracks].sort((a, b) => a.id - b.id);
+  
+  // Encontra a track que está logo abaixo da alvo na lista ordenada
+  const trackAbaixo = sortedTracks
+    .filter(t => t.id < targetTrackId)
+    .pop(); // Pega a última (maior) das menores
+
+  if (!trackAbaixo) {
+    console.warn("Não há track abaixo da alvo para realizar o deslocamento.");
+    return;
+  }
+
+  const novoIdDaAlvo = trackAbaixo.id;
+
+  // 2. Atualizar as Tracks
+  setTracks(prevTracks => {
+    return prevTracks.map(track => {
+      // A track alvo assume o ID da que estava abaixo
+      if (track.id === targetTrackId) {
+        return { ...track, id: novoIdDaAlvo };
+      }
+      
+      // As tracks que estão entre o novoId (inclusive) e o targetId (exclusive)
+      // devem subir +1 para abrir espaço
+      if (track.id >= novoIdDaAlvo && track.id < targetTrackId) {
+        return { ...track, id: track.id + 1 };
+      }
+
+      return track;
+    });
+  });
+
+  // 3. Atualizar os Clips para manterem a consistência com os novos IDs das tracks
+  setClips(prevClips => {
+    return prevClips.map(clip => {
+      let currentTrackId = clip.trackId;
+
+      // Se o clip era da track que "caiu" (a alvo)
+      if (currentTrackId === targetTrackId) {
+        return { ...clip, trackId: novoIdDaAlvo };
+      }
+
+      // Se o clip era de uma das tracks que "subiram"
+      if (currentTrackId >= novoIdDaAlvo && currentTrackId < targetTrackId) {
+        return { ...clip, trackId: currentTrackId + 1 };
+      }
+
+      return clip;
+    });
+  });
+};
+
+
+
 
 
   //part to Project Config
@@ -4017,448 +4120,7 @@ const handleImportFile = async () => {
 
   //elements for aside of config clips
 
-  // Subcomponent for inputs with Keyframe icon
-const PropertyRow = ({ label, children, keyframable = true, activeColor = "#4f46e5", keyframeNow = false }) => (
-  <div className="flex flex-col gap-2 mb-4">
-    <div className="flex justify-between items-center">
-      <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-tighter">{label}</label>
-      {keyframable && (
-        <button 
-          className="transition-colors"
-          style={{ color: `${activeColor}80` }} // 80 = 50% opacidade
-          onMouseEnter={(e) => e.currentTarget.style.color = activeColor}
-          onMouseLeave={(e) => e.currentTarget.style.color = `${activeColor}80`}
-        >
-          {keyframeNow ? (<DiamondPlus color='red' size={10} />) : (<Diamond size={10} />)}
-        </button>
-      )}
-    </div>
-    {children}
-  </div>
-);
 
-
-const PropertiesAside = () => {
-  // Search clip
-  if (!selectedClipIds || selectedClipIds.length !== 1) return null;
-
-  const foundClip = clips.find(c => c.id === selectedClipIds[0]);
-  if (!foundClip) return null;
-
-  const assetnow = assets.find(a => a.name === foundClip.name);
-
-  const selectedClip = {
-      ...foundClip, 
-      path: assetnow?.path, 
-      type: knowTypeByAssetName(foundClip.name)
-  };
-
-  if(!selectedClip.path) return null;
-
-  // Definição da cor ativa
-  const activeHex = COLOR_MAP[selectedClip.color] || '#4f46e5';
-
-  const isVideo = selectedClip.type === "video" || selectedClip.path?.endsWith(".mp4");
-  const isAudio = selectedClip.type === "audio" || selectedClip.path?.endsWith(".mp3") || selectedClip.path?.endsWith(".wav");
-  const isText = selectedClip.type === "text";
-
-
-  const volumeKeyframesTime = selectedClip.keyframes?.volume?.map(kf => kf.time) || null;
-  const opacityKeyframesTime = selectedClip.keyframes?.opacity?.map(kf => kf.time) || null;
-  const speedKeyframesTime = selectedClip.keyframes?.speed?.map(kf => kf.time) || null;
-  const zoomKeyframesTime = selectedClip.keyframes?.zoom?.map(kf => kf.time) || null;
-
-
-
-
-  const volumeKeyframeNow  = volumeKeyframesTime?.some(kfTime => 
-       Math.abs(kfTime - (currentTimeRef.current- selectedClip.start)) <= 0.05
-  ) || false;
-
-  const opacityKeyframeNow  = opacityKeyframesTime?.some(kfTime => 
-       Math.abs(kfTime - (currentTimeRef.current - selectedClip.start)) <= 0.05
-  )|| false;
-
-  const speedKeyframeNow  = speedKeyframesTime?.some(kfTime => 
-       Math.abs(kfTime - (currentTimeRef.current - selectedClip.start)) <= 0.05
-  )|| false;
-
-
-  const zoomKeyframeNow  = zoomKeyframesTime?.some(kfTime => 
-       Math.abs(kfTime - (currentTimeRef.current - selectedClip.start)) <= 0.05
-  )|| false;
-
-const currentPos = getInterpolatedValueWithFades(currentTime, selectedClip, 'position') as Position;
-const rotation3d = getInterpolatedValueWithFades(currentTime, selectedClip, 'rotation3d') as Rotation;
-
-console.log('rotation3d', rotation3d)
-
-
-  return (
-    <aside className="w-72 bg-[#090909] border-l border-white/5 flex flex-col h-full overflow-hidden animate-in slide-in-from-right duration-300"
-    >
-      {/* Header */}
-      <div className="p-4 border-b border-white/5 flex items-center gap-3">
-        {/* Background do ícone com 15% de opacidade via Hex */}
-        <div 
-          className="p-2 rounded-lg" 
-          style={{ backgroundColor: `${activeHex}26` }}
-        >
-          {isVideo && <Video size={16} style={{ color: activeHex }} />}
-          {isAudio && <Volume2 size={16} style={{ color: activeHex }} />}
-          {isText && <Type size={16} style={{ color: activeHex }} />}
-        </div>
-        <div>
-          <h2 className="text-[11px] font-black uppercase tracking-widest text-white">Inspector</h2>
-          <p className="text-[9px] text-zinc-500 truncate w-40">{selectedClip.name || "Selected Clip"}</p>
-        </div>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6">
-        {/* SECTION: BASIC */}
-        <section>
-          <div className="flex items-center gap-2 mb-4" style={{ color: activeHex }}>
-            <Settings2 size={12} />
-            <span className="text-[10px] font-black uppercase tracking-widest">Basic</span>
-          </div>
-
-          {(isVideo || isText) && (
-            <>
-
-            {/*POSITION */}
-
-              {/* Captura os valores atuais via interpolação para exibir no input */}
-
-            <div className="grid grid-cols-2 gap-2">
-              <PropertyRow label="Position X" activeColor={activeHex}>
-                <input 
-                  type="number" 
-                  min="-4000"
-                  max="4000"
-                  defaultValue={Math.round(currentPos.x)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      updateKeyframes(selectedClip, 'position', { x: parseFloat(e.currentTarget.value) });
-                    }
-                  }}
-                  onBlur={(e) => updateKeyframes(selectedClip, 'position', { x: parseFloat(e.currentTarget.value) })}
-                  className="w-full bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none focus:border-white/20 transition-all" 
-                />
-              </PropertyRow>
-
-              <PropertyRow label="Position Y" activeColor={activeHex}>
-                <input 
-                  type="number" 
-                  min="-4000"
-                  max="4000"
-                  defaultValue={Math.round(currentPos.y)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      updateKeyframes(selectedClip, 'position', { y: parseFloat(e.currentTarget.value) });
-                    }
-                  }}
-                  onBlur={(e) => updateKeyframes(selectedClip, 'position', { y: parseFloat(e.currentTarget.value) })}
-                  
-                  className="w-full bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none focus:border-white/20 transition-all" 
-                />
-              </PropertyRow>
-            </div>
-             
-             {/*ZOOM */}
-             
-             <PropertyRow 
-              label={
-                <div className="flex justify-between items-center w-full pr-2">
-                  <span> Zoom </span>
-                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/5 border border-white/10 ml-10" style={{ color: activeHex }}>
-                     {(getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'zoom') * 100).toFixed(0)}%
-                  </span>
-                </div>
-              } 
-              activeColor={activeHex} 
-              keyframeNow={zoomKeyframeNow}
-            >
-                <input 
-                  type="range" 
-                  className="w-full cursor-pointer"                   
-                  style={{ accentColor: activeHex }} 
-                  onInput={(e) => {
-                  e.preventDefault(); e.stopPropagation();
-                  updateKeyframes(selectedClip, 'zoom', (e.target as HTMLInputElement).value)
-                }} 
-                min={0.1} max={20}
-                value={getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'zoom')}
-                />
-              </PropertyRow>
-            </>
-          )}
-
-          {isText && (
-            <>
-              <PropertyRow label="Font" keyframable={false}>
-                <select className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none w-full">
-                  <option>Inter</option>
-                  <option>Roboto</option>
-                  <option>Monospace</option>
-                </select>
-              </PropertyRow>
-              <PropertyRow label="Color" activeColor={activeHex}>
-                <input type="color" className="w-full h-8 bg-transparent border-none rounded cursor-pointer" />
-              </PropertyRow>
-            </>
-          )}
-
-
-      {/* VOLUME */}
-      {(isAudio || isVideo) && (
-        <PropertyRow 
-          label={
-            <div className="flex justify-between items-center w-full pr-2">
-              <span>Volume</span>
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/5 border border-white/10 ml-10" style={{ color: activeHex }}>
-                {(getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'volume')).toFixed(2)} db
-              </span>
-            </div>
-          } 
-          activeColor={activeHex} 
-          keyframeNow={volumeKeyframeNow}
-        >
-          <input 
-            type="range"
-            step="0.001" 
-            className="w-full cursor-pointer" 
-            style={{ accentColor: activeHex }}
-            onInput={(e) => {
-              e.preventDefault(); e.stopPropagation();
-              updateKeyframes(selectedClip, 'volume', (e.target as HTMLInputElement).value)
-            }} 
-            min={-30} max={30}
-            value={getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'volume')}
-          />
-        </PropertyRow>
-      )}
-
-      {/* OPACITY */}
-      {(isVideo || isText) && (
-        <PropertyRow 
-          label={
-            <div className="flex justify-between items-center w-full pr-2">
-              <span>Opacity</span>
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/5 border border-white/10 ml-10" style={{ color: activeHex }}>
-                {(getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'opacity') * 100).toFixed(0)}%
-              </span>
-            </div>
-          } 
-          activeColor={activeHex} 
-          keyframeNow={opacityKeyframeNow}
-        >
-          <input 
-            type="range" 
-            step="0.001"
-            className="w-full cursor-pointer" 
-            style={{ accentColor: activeHex }} 
-            onInput={(e) => {
-              e.preventDefault(); e.stopPropagation();
-              updateKeyframes(selectedClip, 'opacity', (e.target as HTMLInputElement).value)
-            }} 
-            min={0} max={1}
-            value={getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'opacity')}
-          />
-        </PropertyRow>
-      )}
-      
-      {/* SPEED */}
-      <PropertyRow 
-        label={
-          <div className="flex justify-between items-center w-full pr-2">
-            <span>Speed</span>
-            <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/5 border border-white/10 ml-10" style={{ color: activeHex }}>
-              {getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'speed').toFixed(2)}x
-            </span>
-          </div>
-        } 
-        activeColor={activeHex} 
-        keyframeNow={speedKeyframeNow}
-      >
-        <input 
-          type="range" 
-          step="0.1" 
-          min={0.2} 
-          max={20}  
-          className="w-full cursor-pointer"
-          style={{ accentColor: activeHex }}
-          onInput={(e) => {
-            e.preventDefault(); e.stopPropagation();
-            updateKeyframes(selectedClip, 'speed', (e.target as HTMLInputElement).value)
-          }}
-          value={getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'speed')}
-        />
-      </PropertyRow>
-
-          {(isVideo || isText) && (
-            <div className="grid grid-cols-2 gap-2 mt-2">
-              <PropertyRow label="Rotation" activeColor={activeHex}>
-                <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none"
-                min="0"
-                max="360"
-                defaultValue= {Math.round(rotation3d.x)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    updateKeyframes(selectedClip, 'rotation3d', { x: parseFloat(e.currentTarget.value) });
-                  }
-                  }}
-                onBlur={(e) => updateKeyframes(selectedClip, 'rotation3d', { x: parseFloat(e.currentTarget.value) })}
-                />
-              </PropertyRow>
-              <PropertyRow label="3D Rot" activeColor={activeHex}>
-                <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none"
-                min="0"
-                max="360"
-                defaultValue= {Math.round(rotation3d.y)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    updateKeyframes(selectedClip, 'rotation3d', { y: parseFloat(e.currentTarget.value) });
-                  }
-                  }}
-                onBlur={(e) => updateKeyframes(selectedClip, 'rotation3d', { y: parseFloat(e.currentTarget.value) })}
-                />
-              </PropertyRow>
-            </div>
-          )}
-        </section>
-
-        {/* SECTION: FADES */}
-        <section className="pt-4 border-t border-white/5">
-          <div className="flex items-center gap-2 mb-4 text-zinc-400">
-            <Wind size={12} />
-            <span className="text-[10px] font-black uppercase tracking-widest">Transitions</span>
-          </div>
-          {
-            !isAudio && (
-            <div className="grid grid-cols-2 gap-2">
-            <PropertyRow label="Fade In (s)" keyframable={false}>
-              <input type="number" 
-              value={selectedClip.fadein ? 
-                selectedClip.fadein : 0
-               }
-               onInput={(e) => {
-                e.stopPropagation()
-                  const val = parseFloat(e.target.value) || 0;
-                  if (val > selectedClip.duration) return
-                  setClips(prev => prev.map((c) => 
-                    c.id === selectedClip.id ? { ...c, fadein: val } : c
-                  ));
-                }}
-               placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
-            </PropertyRow>
-            <PropertyRow label="Fade Out (s)" keyframable={false}>
-              <input type="number" 
-              value={selectedClip.fadeout ? 
-                selectedClip.fadeout : 0
-               }
-               onInput={(e) => {
-                e.stopPropagation()
-                  const val = parseFloat(e.target.value) || 0;
-                  if (val > selectedClip.duration) return
-
-                  setClips(prev => prev.map((c) => 
-                    c.id === selectedClip.id ? { ...c, fadeout: val } : c
-                  ));
-                }}
-
-
-               placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
-            </PropertyRow>
-          </div>
-          )
-          }
-
-
-          {
-          (isVideo || isAudio) && (<div className="grid grid-cols-2 gap-2">
-            <PropertyRow label="Fade In Audio (s)" keyframable={false}>
-              <input type="number" 
-              value={selectedClip.fadeinAudio ? 
-                selectedClip.fadeinAudio : 0
-               }
-               onInput={(e) => {
-                e.stopPropagation()
-                  const val = parseFloat(e.target.value) || 0;
-                  if (val > selectedClip.duration) return
-
-                  setClips(prev => prev.map((c) => 
-                    c.id === selectedClip.id ? { ...c, fadeinAudio: val } : c
-                  ));
-                }}
-               placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
-            </PropertyRow>
-            <PropertyRow label="Fade Out Audio (s)" keyframable={false}>
-              <input type="number" 
-              value={selectedClip.fadeoutAudio ? 
-                selectedClip.fadeoutAudio : 0
-               }
-               onInput={(e) => {
-                e.stopPropagation()
-                  const val = parseFloat(e.target.value) || 0;
-                  if (val > selectedClip.duration) return
-
-                  setClips(prev => prev.map((c) => 
-                    c.id === selectedClip.id ? { ...c, fadeoutAudio: val } : c
-                  ));
-                }}
-
-
-               placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
-            </PropertyRow>
-          </div>)
-          }
-        </section>
-
-        {/* SECTION: BLEND & MASK */}
-        {!isAudio && (
-          <section className="pt-4 border-t border-white/5">
-            <div className="flex items-center gap-2 mb-4 text-zinc-400">
-              <Layers size={12} />
-              <span className="text-[10px] font-black uppercase tracking-widest">Advanced</span>
-            </div>
-            <PropertyRow label="Blend Mode" keyframable={false}>
-  <div className="relative w-full">
-    <select 
-      className="appearance-none w-full bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none focus:border-white/20 cursor-pointer pr-6"
-      value={selectedClip.blendmode || 'normal'}
-      onChange={(e) => {
-        e.stopPropagation();
-        const newBlendMode = e.target.value as any;
-        setClips(prev => prev.map(c => 
-          c.id === selectedClip.id ? { ...c, blendmode: newBlendMode } : c
-        ));
-      }}
-    >
-      <option value="normal" className="bg-[#090909]">Normal</option>
-      <option value="screen" className="bg-[#090909]">Screen</option>
-      <option value="lineardodge" className="bg-[#090909]">Add (Linear Dodge)</option>
-      <option value="multiply" className="bg-[#090909]">Multiply</option>
-      <option value="overlay" className="bg-[#090909]">Overlay</option>
-    </select>
-    
-    {/* Setinha customizada para compensar o appearance-none */}
-    <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-500">
-      <ChevronDown size={10} />
-    </div>
-  </div>
-</PropertyRow>
-            <PropertyRow label="Mask" keyframable={false}>
-              <button className="w-full bg-white/5 border border-white/5 rounded py-2 text-[9px] font-bold hover:bg-white/10 transition-all uppercase">
-                Edit Mask
-              </button>
-            </PropertyRow>
-          </section>
-        )}
-      </div>
-    </aside>
-  );
-};
 
 //speed keyframe system
 
@@ -5493,155 +5155,23 @@ return (
         <main className="flex-1 flex overflow-hidden min-h-0">
           
           
-          
-          <aside 
-          style={{ width: `${sidebarWidth}px` }}
-          className="relative border-r border-zinc-800 bg-[#0c0c0c] flex flex-col hidden lg:flex">
-            <div className="p-4 border-b border-zinc-900">
-              <h2 className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Media Library</h2>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-2">
-              <div onClick={handleImportFile} className="aspect-video border border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center group cursor-pointer hover:bg-zinc-900/50 mb-4 transition-colors">
-                <Plus size={20} className="text-zinc-700 group-hover:text-fuchsia-400 transition-colors" />
-                <h2 className="text-[9px] font-black text-zinc-500 uppercase mt-2">Import Media</h2>
-              </div>
-
-              {/* RIGHT RESIZER HANDLE */}
-                <div 
-                  onMouseDown={() => {
-                    isResizingSidebar.current = true;
-                    document.body.style.cursor = 'col-resize';
-                  }}
-                  className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize z-[60] hover:bg-blue-500/40 transition-colors"
-                />
-
-
-              {/* Search Bar Container */}
-              <div className="relative mb-6 group">
-                {/* Ícone de Lupa */}
-                <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
-                  <Search 
-                    size={16} 
-                    className={`transition-colors duration-300 ${
-                      searchQuery ? 'text-red-500' : 'text-zinc-500 group-focus-within:text-red-400'
-                    }`} 
-                  />
-                </div>
-
-                {/* Input Estilizado */}
-                <input
-                  type="text"
-                  placeholder="Search assets (video, audio, images...)"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="h-3 w-full bg-[#161616]/50 backdrop-blur-xl border border-white/5 rounded-2xl py-3 pl-12 pr-12 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-red-600/30 focus:bg-[#1a1a1a] transition-all duration-300"
-                />
-
-                {/* Search Query */}
-                <AnimatePresence>
-                  {searchQuery && (
-                    <motion.button
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.8 }}
-                      onClick={() => setSearchQuery("")}
-                      className="absolute inset-y-0 right-4 flex items-center text-zinc-500 hover:text-white transition-colors"
-                    >
-                      <X size={14} />
-                    </motion.button>
-                  )}
-                </AnimatePresence>
-              </div>
-
-                  {filteredAssets.length > 0 ? (
-                    filteredAssets.map((asset, index) => (
-                      <motion.div
-                        key={asset.path} 
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: index * 0.05 }}
-                        onClick={(e) => {toggleAssetSelection(asset, e.shiftKey || e.ctrlKey); setSourceAsset(asset); setInPoint(0); setOutPoint(0); setCurrentTime2(0)}}
-                        className={`group relative aspect-video bg-[#1a1a1a] rounded-lg overflow-hidden border border-white/5 hover:border-red-600/50 transition-colors cursor-pointer
-                        ${selectedAssets.includes(asset) ? 'bg-red-500/10 border-red-500' : 'bg-[#151515] border-zinc-800 hover:border-zinc-600'}`}
-                        draggable="true"
-                        onDragStart={(e) => handleDragStart(e, null, null, null, asset.name, false, null)}
-                      >
-                        {/* Thumbnail: Only for not audio (video and images ) */}
-                        {asset.type !== 'audio' && asset.thumbnailUrl && (
-                          <img 
-                            src={asset.thumbnailUrl} 
-                            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
-                            alt={asset.name}
-                          />
-                        )}
-
-                        {/* For Audio */}
-                        {asset.type === 'audio' && (
-                          <div className="absolute inset-0 flex items-center justify-center bg-[#121212]">
-                            <Music 
-                              size={48} 
-                              className="text-gray-600 transition-colors duration-300 group-hover:text-red-600" 
-                            />
-                          </div>
-                        )}
-
-                        {/* Gradient Overlay */}
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/40 opacity-100" />
-
-                        {/* Duration Badge (Don't show for images) */}
-                        {asset.type !== 'image' && asset.duration && (
-                          <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] font-mono text-white">
-                            {formatTime(asset.duration)}
-                          </div>
-                        )}
-
-                        {/* Icon Type */}
-                        <div className="absolute top-2 left-2 p-1 bg-black/50 backdrop-blur-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
-                          {asset.type === 'video' && <Play size={12} className="text-white" />}
-                          {asset.type === 'audio' && <Music size={12} className="text-white" />}
-                          {asset.type === 'image' && <ImageIcon size={12} className="text-white" />}
-                        </div>
-
-                        {/* File Name */}
-                        <div className="absolute bottom-2 left-2 right-12 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <p className="text-[10px] text-white truncate font-medium drop-shadow-lg" contentEditable
-                          suppressContentEditableWarning={true}
-                          onDoubleClick={(e) => {
-                            // Ensures that text is selected when double-clicking.
-                            e.stopPropagation();
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              (e.target as HTMLElement).blur(); //  onBlur
-                            }
-
-                            if (e.key === 'Escape') {
-                              // Cancel edit
-                              e.currentTarget.innerText = asset.name;
-                              e.currentTarget.blur();
-                            }
-                          }}
-                          onBlur={(e) => {
-                            const newName = e.target.innerText.trim();
-                            handleRenameAsset(asset.name, newName);
-                          }}>
-                            {asset.name}
-                          </p>
-                        </div>
-                      </motion.div>
-                    )) 
-                  ) : (
-                    /* Empty State */
-                    <div className="col-span-full py-20 text-center">
-                      <Search size={48} className="mx-auto text-zinc-800 mb-4" />
-                      <p className="text-zinc-500 text-sm italic">No assets match your search...</p>
-                    </div>
-                  )}
-              
-     
-            </div>
-          </aside>
+          <ItensAside 
+            sidebarWidth={sidebarWidth}
+            isResizingSidebar={isResizingSidebar}
+            handleImportFile={handleImportFile}
+            searchQuery={searchQuery}
+            setSearchQuery={setSearchQuery}
+            filteredAssets={filteredAssets}
+            selectedAssets={selectedAssets}
+            toggleAssetSelection={toggleAssetSelection}
+            setSourceAsset={setSourceAsset}
+            setInPoint={setInPoint}
+            setOutPoint={setOutPoint}
+            setCurrentTime2={setCurrentTime2}
+            handleDragStart={handleDragStart}
+            handleRenameAsset={handleRenameAsset}
+            formatTime={formatTime}
+          />
 
 <div id="twopreview" className="flex-1 flex overflow-hidden min-h-0 bg-[#050505]">
 
@@ -5945,7 +5475,18 @@ return (
 
 </div>
 
-      <PropertiesAside/>
+      <PropertiesAside 
+      selectedClipIds={selectedClipIds}
+      clips={clips}
+      assets={assets}
+      currentTime={currentTime}
+      currentTimeRef={currentTimeRef}
+      setClips={setClips}
+      updateKeyframes={updateKeyframes}
+      getInterpolatedValueWithFades={getInterpolatedValueWithFades}
+      knowTypeByAssetName={knowTypeByAssetName}
+      COLOR_MAP={COLOR_MAP}
+    />
 
 
 
@@ -6122,7 +5663,7 @@ return (
     return a.id - b.id;
   })
   // 3. Maps to the component
-  .map((track) => (
+  .map((track, index) => (
       <div key={track.id} className="flex gap-2 group">
         
         {/* ASIDE: Icons Track and id */}
@@ -6157,6 +5698,17 @@ return (
                   ? 'text-violet-500 fill-violet-500/20' // Roxo moderno com um leve preenchimento (opcional)
                   : 'text-gray-400 hover:text-gray-200'  // Cor neutra quando desligado
               }`}/>
+
+            {
+             (index !== 0 && track.type == 'video') && <ArrowBigUpDash size={14} onClick={()=> transferClipsToNewTrackZero(track.id)}
+             className={"cursor-pointer transition-colors duration-200"}/> 
+            }
+
+            {
+             (index !== 0 && index !==1 && track.type == 'video') && <ArrowUp size={14} onClick={()=> moveTrackDownAndShiftOthers(track.id)}
+             className={"cursor-pointer transition-colors duration-200"}/> 
+            }
+
 
 
           </div>
