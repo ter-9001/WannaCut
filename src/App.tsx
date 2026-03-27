@@ -1430,7 +1430,256 @@ const getOpacityAtTime = (clip: Clip) => {
 
 //Render main frame
 
+const drawFrame__new2 = async (time: number) => {
+    if (!canvasRef.current) return;
+    
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
+
+    if (canvasRef.current.width !== projectConfig.width || canvasRef.current.height !== projectConfig.height) {
+        canvasRef.current.width = projectConfig.width;
+        canvasRef.current.height = projectConfig.height;
+    }
+
+    if (!topClips.current || topClips.current.length === 0) {
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        return;
+    }
+
+    const now = performance.now();
+    if (isPlaying && (now - lastFrameTimeRef.current < (1000 / projectConfig.fps))) return;
+    lastFrameTimeRef.current = now;
+
+    const blendModeMap: Record<string, GlobalCompositeOperation> = {
+        'normal': 'source-over',
+        'screen': 'screen',
+        'multiply': 'multiply',
+        'overlay': 'overlay',
+        'lineardodge': 'lighter',
+    };
+
+    try {
+        // --- FASE 1: BUSCA DE FRAMES ---
+        const framePromises = topClips.current.map(async (clip) => {
+            const timelineRelativeTime = time - clip.start;
+            let assetRelativeTime = timelineRelativeTime;
+
+            if (clip.keyframes?.speed && clip.keyframes.speed.length > 0) {
+                // ... (Sua lógica de Speed Ramp mantida)
+            }
+
+            const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
+            const path = `${currentProjectPath}/videos/${clip.name}`;
+
+            try {
+                const frameBase64: string = await invoke('get_video_frame', { path, timeMs: clipTimeMs });
+                return new Promise<HTMLImageElement | null>((resolve) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = () => resolve(null);
+                    img.src = frameBase64;
+                });
+            } catch (e) { return null; }
+        });
+
+        const loadedImages = await Promise.all(framePromises);
+
+        // --- FASE 2: DESENHO ---
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+        for (let i = loadedImages.length - 1; i >= 0; i--) {
+            const img = loadedImages[i];
+            const clip = topClips.current[i];
+            if (!img) continue;
+
+            
+            // 1. Interpolação de Atributos
+            const opacity = getInterpolatedValueWithFades(currentTime, clip, 'opacity');
+            const zoom = getInterpolatedValueWithFades(currentTime, clip, 'zoom') || 1.0;
+            const pos = getInterpolatedValueWithFades(currentTime, clip, 'position') as Position | null;
+
+            // 2. Cálculo de Dimensões (Usa metadados ou a imagem real)
+            const clipW = clip.dimensions?.x || img.width;
+            const clipH = clip.dimensions?.y || img.height;
+
+            // 3. Cálculo de Posição Base
+            let drawX = pos ? pos.x : (canvasRef.current.width - clipW) / 2;
+            let drawY = pos ? pos.y : (canvasRef.current.height - clipH) / 2;
+
+            ctx.save();
+
+// 1. Defina o modo de mesclagem e opacidade primeiro
+ctx.globalCompositeOperation = blendModeMap[clip.blendmode || 'normal'] || 'source-over';
+ctx.globalAlpha = opacity;
+
+
+// 3. Posição alvo (onde o centro do clipe deve estar na tela)
+// Se não houver pos, centralizamos no canvas
+const targetX = pos ? pos.x : (canvasRef.current.width - clipW) / 2;
+const targetY = pos ? pos.y : (canvasRef.current.height - clipH) / 2;
+
+/**
+ * ESTRATÉGIA ANTI-ATRASO:
+ * Em vez de múltiplos translates, fazemos uma única transformação coordenada.
+ */
+// Movemos para o destino final (Posição X, Y)
+ctx.translate(targetX, targetY);
+
+// Movemos para o centro do próprio clipe para escalar a partir do meio
+ctx.translate(clipW / 2, clipH / 2);
+ctx.scale(zoom, zoom);
+// Movemos de volta para a origem do clipe
+ctx.translate(-clipW / 2, -clipH / 2);
+
+// 4. Desenho final (o 0,0 agora é o topo-esquerdo do clipe já transformado)
+ctx.drawImage(img, 0, 0, clipW, clipH);
+
+ctx.restore();
+        }
+
+    } catch (err) {
+        console.error("Erro no preview:", err);
+    }
+};
+
+
 const drawFrame = async (time: number) => {
+  if (!canvasRef.current) return;
+
+  const ctx = canvasRef.current.getContext('2d');
+  if (!ctx) return;
+
+  // Sincroniza dimensões do Canvas com o Projeto
+  if (canvasRef.current.width !== projectConfig.width || canvasRef.current.height !== projectConfig.height) {
+    canvasRef.current.width = projectConfig.width;
+    canvasRef.current.height = projectConfig.height;
+  }
+
+  // Se não houver clipes, limpa a tela e sai
+  if (!topClips.current || topClips.current.length === 0) {
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    return;
+  }
+
+  // Controle de FPS para o Preview
+  const now = performance.now();
+  if (isPlaying && (now - lastFrameTimeRef.current < (1000 / projectConfig.fps))) return;
+  lastFrameTimeRef.current = now;
+
+  const blendModeMap: Record<string, GlobalCompositeOperation> = {
+    'normal': 'source-over',
+    'screen': 'screen',
+    'multiply': 'multiply',
+    'overlay': 'overlay',
+    'lineardodge': 'lighter',
+  };
+
+  try {
+    // --- FASE 1: BUSCA DE FRAMES ---
+    const framePromises = topClips.current.map(async (clip) => {
+      const timelineRelativeTime = time - clip.start;
+      let assetRelativeTime = timelineRelativeTime;
+
+      // Cálculo de Speed Ramp (Se houver keyframes de velocidade)
+      if (clip.keyframes?.speed && clip.keyframes.speed.length > 0) {
+        // assetRelativeTime = calculateSpeedRamp(timelineRelativeTime, clip.keyframes.speed);
+      }
+
+      const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
+      const path = `${currentProjectPath}/videos/${clip.name}`;
+
+      try {
+        const frameBase64 = await invoke('get_video_frame', { path, timeMs: clipTimeMs });
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => resolve(null);
+          img.src = frameBase64;
+        });
+      } catch (e) { return null; }
+    });
+
+    const loadedImages = await Promise.all(framePromises);
+
+    // --- FASE 2: RENDERIZAÇÃO ---
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+    // Renderiza de baixo para cima (respeitando camadas)
+    for (let i = loadedImages.length - 1; i >= 0; i--) {
+      const img = loadedImages[i] as HTMLImageElement;
+      const clip = topClips.current[i];
+      if (!img) continue;
+
+      // 1. Interpolação de Keyframes
+      const opacity = getInterpolatedValueWithFades(time, clip, 'opacity');
+      const zoom = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
+      const pos = getInterpolatedValueWithFades(time, clip, 'position') as { x: number, y: number };
+      const rotation = getInterpolatedValueWithFades(time, clip, 'rotation3d') as { rot: number, rot3d: number } 
+        || { rot: 0, rot3d: 0 };
+
+      // 2. Definição de Tamanho e Posição
+      const clipW = (clip.dimensions?.x || img.width) * zoom;
+      const clipH = (clip.dimensions?.y || img.height) * zoom;
+      const targetX = pos ? pos.x : (canvasRef.current.width - clipW) / 2;
+      const targetY = pos ? pos.y : (canvasRef.current.height - clipH) / 2;
+
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
+      ctx.globalCompositeOperation = blendModeMap[clip.blendmode || 'normal'] || 'source-over';
+
+      // --- CONFIGURAÇÃO 3D ---
+      const focalLength = 1200; // Intensidade da perspectiva
+      const radY = (rotation.rot3d || 0) * Math.PI / 180; // Rotação Y (Giro 3D)
+      const radZ = (rotation.rot || 0) * Math.PI / 180;   // Rotação Z (Plano XY)
+
+      // Move para o centro do clip na tela
+      ctx.translate(targetX + clipW / 2, targetY + clipH / 2);
+      ctx.rotate(radZ);
+
+      // Quantidade de tiras para o efeito (60-80 é o ponto ideal entre performance e qualidade)
+      const slices = 60;
+      const sliceW = clipW / slices;
+
+      for (let s = 0; s < slices; s++) {
+        // Distância X da tira em relação ao centro do clip
+        const x = s * sliceW - clipW / 2;
+        
+        // Cálculo da profundidade Z baseada no Seno do ângulo de rotação
+        const z = x * Math.sin(radY);
+        
+        // Fator de escala da perspectiva (quem está mais perto do Z parece maior)
+        const scale = focalLength / (focalLength - z);
+        
+        // Posição X projetada após a rotação e perspectiva
+        const projectedX = x * Math.cos(radY) * scale;
+
+        ctx.save();
+        ctx.translate(projectedX, 0);
+        ctx.scale(scale, scale);
+
+        // Desenha a fatia vertical correspondente da imagem fonte
+        ctx.drawImage(
+          img,
+          (s * img.width) / slices, 0,     // Fonte X, Y
+          img.width / slices, img.height,  // Fonte Largura, Altura
+          -sliceW / 2, -clipH / (2 * zoom), // Destino X, Y (Compensando o centro)
+          sliceW + 0.5, clipH / zoom       // Destino L, A (+0.5 evita linhas entre fatias)
+        );
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+  } catch (err) {
+    console.error("Erro na renderização do frame:", err);
+  }
+};
+
+const drawFrame_old = async (time: number) => {
     if (!canvasRef.current) return;
     
     const ctx = canvasRef.current.getContext('2d');
@@ -4654,8 +4903,103 @@ const handleClipMouseMove = (e: React.MouseEvent, clip: Clip) => {
 };
 
 
+const updateKeyframes = (
+  clip: Clip,
+  type: 'opacity' | 'volume' | 'speed' | 'position' | 'rotation3d' | 'zoom',
+  // Atualizei a tipagem para aceitar as novas chaves
+  newValue: number | { x?: number; y?: number; rot?: number; rot3d?: number }
+) => {
+  const threshold = 0.05;
+  const relativeTime = currentTimeRef.current - clip.start;
+  const safeKeyframes = clip.keyframes || {};
+  const currentTypeArray = [...(safeKeyframes[type] || [])];
 
-const updateKeyframes= (
+  // 1. Define o valor padrão baseado no tipo (Corrigido para rot/rot3d)
+  const getDefaultValue = () => {
+    switch (type) {
+      case 'position': return { x: 0, y: 0 };
+      case 'rotation3d': return { rot: 0, rot3d: 0 }; // Alterado de x/y para rot/rot3d
+      case 'zoom': return 1.0;
+      case 'speed': return 1.0;
+      case 'opacity': return 1.0;
+      case 'volume': return 0; // volume em dB costuma iniciar em 0
+      default: return 0;
+    }
+  };
+
+  // 2. Função para mesclar valores (Merge Inteligente)
+  const getUpdatedValue = (oldValue: any) => {
+    // Se o novo valor for um objeto (Position ou Rotation)
+    if (typeof newValue === 'object' && newValue !== null) {
+      // Se já existe um valor no KF, usa ele como base, senão usa o default
+      const base = oldValue !== undefined && oldValue !== null ? oldValue : getDefaultValue();
+      
+      // Retorna a união do antigo com o novo (ex: mantém rot e muda apenas rot3d)
+      return { ...base, ...newValue };
+    }
+    // Se for um número (opacity, zoom, etc)
+    return newValue;
+  };
+
+  let updatedTypeArray: Keyframe[];
+
+  // LÓGICA DE ATUALIZAÇÃO DA TRACK (CASOS DE ESTADO)
+
+  // CASO 0: Inicialização (Track vazia e não estamos visualizando a linha de automação)
+  if (currentTypeArray.length === 0 && clip.activeKeyframeView !== type) {
+    updatedTypeArray = [{
+      id: crypto.randomUUID(),
+      time: 0,
+      value: getUpdatedValue(null) // O null força o uso do getDefaultValue dentro do merge
+    }];
+  }
+  // CASO 1: Ajuste Global (Apenas 1 KF e não estamos no modo de "animação" ativa)
+  else if (currentTypeArray.length === 1 && clip.activeKeyframeView !== type) {
+    updatedTypeArray = [{
+      ...currentTypeArray[0],
+      value: getUpdatedValue(currentTypeArray[0].value)
+    }];
+  }
+  // CASO 2: Modo Animação (Múltiplos KFs ou gravando no playhead atual)
+  else {
+    const existingIndex = currentTypeArray.findIndex(
+      (kf) => Math.abs(kf.time - relativeTime) <= threshold
+    );
+
+    if (existingIndex !== -1) {
+      // Atualiza KF existente no tempo atual
+      updatedTypeArray = currentTypeArray.map((kf, index) =>
+        index === existingIndex ? { ...kf, value: getUpdatedValue(kf.value) } : kf
+      );
+    } else {
+      // Cria novo KF no tempo atual baseado no valor interpolado ou anterior
+      // Para garantir suavidade, o valor inicial do novo KF deve ser o valor que o clipe já tinha naquele momento
+      const currentValueAtTime = getInterpolatedValueWithFades(currentTimeRef.current, clip, type);
+      
+      const newKeyframe = {
+        id: crypto.randomUUID(),
+        time: relativeTime,
+        value: getUpdatedValue(currentValueAtTime),
+      };
+      
+      updatedTypeArray = [...currentTypeArray, newKeyframe].sort((a, b) => a.time - b.time);
+    }
+  }
+
+  // 3. Persistência no Estado do React
+  const updatedKeyframes = { ...safeKeyframes, [type]: updatedTypeArray };
+
+  setClips((prev) =>
+    prev.map((c) => (c.id === clip.id ? { ...c, keyframes: updatedKeyframes } : c))
+  );
+
+  // 4. Gatilhos de processamento pesado (Ex: Recalcular Speed Ramp no Rust/Backend)
+  if (type === 'speed') {
+    handleSpeedKeyframeChange({ ...clip, keyframes: updatedKeyframes });
+  }
+};
+
+const updateKeyframes_old = (
   clip: Clip, 
   type: 'opacity' | 'volume' | 'speed' | 'position' | 'rotation3d' | 'zoom', 
   newValue: number | { x?: number, y?: number, z?: number }
@@ -4741,72 +5085,6 @@ const updateKeyframes= (
   }
 };
 
-const updateKeyframes_old = (
-  clip: Clip, 
-  type: 'opacity' | 'volume' | 'speed' | 'position' | 'rotation3d' | 'zoom', 
-  newValue: number | { x?: number, y?: number, z?: number }
-) => {
-  const threshold = 0.05;
-  const relativeTime = currentTimeRef.current - clip.start;
-
-  const safeKeyframes = clip.keyframes || {};
-  const currentTypeArray = safeKeyframes[type] || [];
-
-  // Função auxiliar para processar o merge de valores (número ou objeto)
-  const getUpdatedValue = (oldValue: any) => {
-    if (typeof newValue === 'object') {
-      const currentObj = oldValue || { x: 0, y: 0, z: 0 };
-      return { ...currentObj, ...newValue }; // Faz o merge de X, Y ou Z simultaneamente
-    }
-    return newValue;
-  };
-
-  let updatedTypeArray;
-
-  // CASO 0: Inicialização
-  if (currentTypeArray.length === 0) {
-    updatedTypeArray = [{
-      id: crypto.randomUUID(),
-      time: 0,
-      value: getUpdatedValue(type === 'position' ? { x: 0, y: 0 } : type === 'rotation3d' ? { x: 0, y: 0, z: 0 } : 1)
-    }];
-  }
-  // CASO 1: Ajuste Global
-  else if (currentTypeArray.length === 1 && clip.activeKeyframeView !== type) {
-    updatedTypeArray = [{
-      ...currentTypeArray[0],
-      value: getUpdatedValue(currentTypeArray[0].value)
-    }];
-  } 
-  else {
-    // CASO 2: Lógica de Animação
-    const existingIndex = currentTypeArray.findIndex(
-      (kf) => Math.abs(kf.time - relativeTime) <= threshold
-    );
-
-    if (existingIndex !== -1) {
-      updatedTypeArray = currentTypeArray.map((kf, index) =>
-        index === existingIndex ? { ...kf, value: getUpdatedValue(kf.value) } : kf
-      );
-    } else {
-      const newKeyframe = {
-        id: crypto.randomUUID(),
-        time: relativeTime,
-        value: getUpdatedValue(null),
-      };
-      
-      updatedTypeArray = [...currentTypeArray, newKeyframe].sort((a, b) => a.time - b.time);
-    }
-  }
-
-  const updatedKeyframes = { ...safeKeyframes, [type]: updatedTypeArray };
-
-  setClips((prev) =>
-    prev.map((c) => c.id === clip.id ? { ...c, keyframes: updatedKeyframes } : c)
-  );
-
-  if (type === 'speed') handleSpeedKeyframeChange({ ...clip, keyframes: updatedKeyframes });
-};
 
 
 

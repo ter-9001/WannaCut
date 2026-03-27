@@ -67,9 +67,21 @@ export const PropertiesAside = ({
   if (!selectedClip.path) return null;
 
   const activeHex = COLOR_MAP[selectedClip.color] || '#4f46e5';
-  const isVideo = selectedClip.type === "video" || selectedClip.path?.endsWith(".mp4");
-  const isAudio = selectedClip.type === "audio" || selectedClip.path?.endsWith(".mp3") || selectedClip.path?.endsWith(".wav");
-  const isText = selectedClip.type === "text";
+
+  const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v'];
+  const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'];
+  const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp'];
+
+  // 2. Função auxiliar para verificar a extensão (ignora maiúsculas/minúsculas)
+  const hasExtension = (path, extensions) => 
+    path ? extensions.some(ext => path.toLowerCase().endsWith(ext)) : false;
+
+  // 3. Atribuição das constantes
+  const isVideo = selectedClip.type === "video" || hasExtension(selectedClip.path, VIDEO_EXTENSIONS);
+  const isAudio = selectedClip.type === "audio" || hasExtension(selectedClip.path, AUDIO_EXTENSIONS);
+  const isImage = selectedClip.type === "image" || hasExtension(selectedClip.path, IMAGE_EXTENSIONS);
+  const isText  = selectedClip.type === "text";
+
 
   // Lógica de KeyframeNow (Volume, Opacity, etc)
   const checkKeyframeNow = (prop: string) => {
@@ -117,7 +129,7 @@ export const PropertiesAside = ({
             <span className="text-[10px] font-black uppercase tracking-widest">Basic</span>
           </div>
 
-          {(isVideo || isText) && (
+          {(isVideo || isText || isImage) && (
             <>
 
             {/*POSITION */}
@@ -205,7 +217,7 @@ export const PropertiesAside = ({
 
 
       {/* VOLUME */}
-      {(isAudio || isVideo) && (
+      {(isAudio || isVideo ) && (
         <PropertyRow 
           label={
             <div className="flex justify-between items-center w-full pr-2">
@@ -234,7 +246,7 @@ export const PropertiesAside = ({
       )}
 
       {/* OPACITY */}
-      {(isVideo || isText) && (
+      {(isVideo || isText || isImage) && (
         <PropertyRow 
           label={
             <div className="flex justify-between items-center w-full pr-2">
@@ -290,7 +302,7 @@ export const PropertiesAside = ({
         />
       </PropertyRow>
 
-          {(isVideo || isText) && (
+          {(isVideo || isText || isImage) && (
             <div className="grid grid-cols-2 gap-2 mt-2">
               <PropertyRow label="Rotation" activeColor={activeHex}>
                 <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none"
@@ -299,10 +311,10 @@ export const PropertiesAside = ({
                 defaultValue= {Math.round(rotation3d.x)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
-                    updateKeyframes(selectedClip, 'rotation3d', { x: parseFloat(e.currentTarget.value) });
+                    updateKeyframes(selectedClip, 'rotation3d', { rot: parseFloat(e.currentTarget.value) });
                   }
                   }}
-                onBlur={(e) => updateKeyframes(selectedClip, 'rotation3d', { x: parseFloat(e.currentTarget.value) })}
+                onBlur={(e) => updateKeyframes(selectedClip, 'rotation3d', { rot: parseFloat(e.currentTarget.value) })}
                 />
               </PropertyRow>
               <PropertyRow label="3D Rot" activeColor={activeHex}>
@@ -312,10 +324,10 @@ export const PropertiesAside = ({
                 defaultValue= {Math.round(rotation3d.y)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
-                    updateKeyframes(selectedClip, 'rotation3d', { y: parseFloat(e.currentTarget.value) });
+                    updateKeyframes(selectedClip, 'rotation3d', { rot3d: parseFloat(e.currentTarget.value) });
                   }
                   }}
-                onBlur={(e) => updateKeyframes(selectedClip, 'rotation3d', { y: parseFloat(e.currentTarget.value) })}
+                onBlur={(e) => updateKeyframes(selectedClip, 'rotation3d', { rot3d: parseFloat(e.currentTarget.value) })}
                 />
               </PropertyRow>
             </div>
@@ -329,7 +341,7 @@ export const PropertiesAside = ({
             <span className="text-[10px] font-black uppercase tracking-widest">Transitions</span>
           </div>
           {
-            !isAudio && (
+           (isVideo || isText || isImage) && (
             <div className="grid grid-cols-2 gap-2">
             <PropertyRow label="Fade In (s)" keyframable={false}>
               <input type="number" 
@@ -368,7 +380,7 @@ export const PropertiesAside = ({
           )
           }
 
-
+          {/* Fade In and Out Audio*/}
           {
           (isVideo || isAudio) && (<div className="grid grid-cols-2 gap-2">
             <PropertyRow label="Fade In Audio (s)" keyframable={false}>
@@ -410,7 +422,7 @@ export const PropertiesAside = ({
         </section>
 
         {/* SECTION: BLEND & MASK */}
-        {!isAudio && (
+        {(isVideo || isText || isImage) && (
           <section className="pt-4 border-t border-white/5">
             <div className="flex items-center gap-2 mb-4 text-zinc-400">
               <Layers size={12} />
