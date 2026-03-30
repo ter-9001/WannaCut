@@ -67,7 +67,7 @@ import {
 } from 'lucide-react';
 
 import Waveform from "@/components/Waveform";
-import ProjectSettingsModal from "@/components/ProjectSettingsModal";
+import { SettingsModal } from './components/SettingsModal';
 import { PropertiesAside } from '@/components/PropertiesAside';
 import { ItensAside } from './components/ItensAside';
 
@@ -190,7 +190,7 @@ const PIXELS_PER_SECOND = 5;
 
 export default function App() {
   // --- STATE MANAGEMENT ---
-  const [rootPath, setRootPath] = useState<string | null>(localStorage.getItem("freecut_root"));
+  const [rootPath, setRootPath] = useState<string | null>(null);
   const [isSetupOpen, setIsSetupOpen] = useState(true);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [projectName, setProjectName] = useState("My Awesome Project");
@@ -369,6 +369,55 @@ const moveTrackDownAndShiftOthers = (targetTrackId: number) => {
     });
   });
 };
+
+
+/* Part of settingsmodal */
+
+
+const [freecutSettings, setFreecutSettings] = useState({
+  workspace: '',
+  gpu: null,
+  shortcuts: ''
+});
+
+// Efeito para validar a pasta de configurações ao abrir o app
+useEffect(() => {
+  const checkConfig = async () => {
+
+    console.log('entrou em check configs')
+    const settingsFolder = localStorage.getItem("freecut_settings_folder");
+    
+
+
+    if (!settingsFolder ) {
+      // Se não existe, força a abertura do modal na aba de config
+      setIsSettingsOpen(true);
+    } else {
+      // Carrega o workspace do JSON para substituir o localStorage antigo
+      try {
+        const content = await invoke('read_settings_file', { 
+          path: `${settingsFolder}/freecut_settings.json` 
+        }) as string;
+        const parsed = JSON.parse(content);
+        setFreecutSettings(parsed);
+        
+        // Se o workspace estiver vazio, também precisamos alertar o usuário
+        if (!parsed.workspace) {
+           console.warn("Workspace não definido nas configurações.");
+        }
+
+        console.log('workspace:', parsed.workspace)
+        setRootPath(parsed.workspace)
+
+
+      } catch (e) {
+        console.error("Falha ao ler freecut_settings.json");
+      }
+    }
+  };
+  checkConfig();
+}, []);
+
 
 
 
@@ -1523,13 +1572,13 @@ const fetchFramesFromRust = async (time: number) => {
   return results.filter((res): res is {id: string, img: HTMLImageElement, clip: any} => res !== null);
 };
 
-const syncClipsToScene = (loadedData: any[], time: number) => {
+const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement, clip: any }[], time: number) => {
   const scene = sceneRef.current;
-  if (!scene) return;
+  if (!scene || !rendererRef.current) return;
 
   const loadedIds = new Set(loadedData.map(d => d.id));
   
-  // Limpeza
+  // 1. LIMPEZA (GC)
   groupsRef.current.forEach((group, id) => {
     if (!loadedIds.has(id)) {
       scene.remove(group);
@@ -1541,16 +1590,32 @@ const syncClipsToScene = (loadedData: any[], time: number) => {
     }
   });
 
-  // Renderização/Sincronização
+  // 2. RENDERIZAÇÃO
   loadedData.forEach(({ id, img, clip }, index) => {
     let group = groupsRef.current.get(id);
     let mesh: THREE.Mesh;
 
     if (!group) {
       group = new THREE.Group();
+      
+      // Criamos um plano 1x1. O segredo é a escala depois.
       const geometry = new THREE.PlaneGeometry(1, 1);
-      const material = new THREE.MeshBasicMaterial({ transparent: true, side: THREE.DoubleSide });
+      
+      // FORÇAR O PONTO ZERO NO CENTRO EXATO
+      geometry.center(); 
+
+      const material = new THREE.MeshBasicMaterial({ 
+        transparent: true, 
+        side: THREE.DoubleSide,
+        depthWrite: false 
+      });
+
       mesh = new THREE.Mesh(geometry, material);
+      
+      // Ordem YXZ: Primeiro rotaciona em Y (o 3D), depois X, depois Z (o 2D)
+      // Isso é o que evita o efeito de "dobradiça" ou distorção de eixo
+      mesh.rotation.order = 'YXZ'; 
+      
       group.add(mesh);
       scene.add(group);
       groupsRef.current.set(id, group);
@@ -1558,6 +1623,169 @@ const syncClipsToScene = (loadedData: any[], time: number) => {
       mesh = group.children[0] as THREE.Mesh;
     }
 
+    // --- TEXTURA ---
+    const texture = new THREE.Texture(img);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+    const mat = mesh.material as THREE.MeshBasicMaterial;
+    if (mat.map) mat.map.dispose();
+    mat.map = texture;
+
+    // --- VALORES DO PYTHON ---
+    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
+    const zoom = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
+    const pos = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
+    const rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d');
+    
+    const rotation = {
+      rot: rotationRaw?.rot ?? 0,
+      rot3d: rotationRaw?.rot3d ?? 0
+    };
+
+    let ajustcenter = clip.dimentions.x/5;
+    
+    if(
+    ( !(0 <= rotationRaw.rot3d) && ( rotationRaw.rot3d <= 90)) || 
+    (     !(-181 <= rotationRaw.rot3d) && ( rotationRaw.rot3d <= -91)  ) 
+    )
+    {
+        ajustcenter = -1 * ajustcenter
+    }
+
+  const isRotationZero = rotationRaw.rot3d === 0;
+  const hasNoRotation = !rotationRaw;
+  const hasNoPosition = !clip.keyframes.position;
+
+  if (hasNoRotation) 
+    ajustcenter = 0;
+
+  if(isRotationZero) 
+    ajustcenter = 0;
+
+    console.log('ajust', ajustcenter)
+
+    console.log(
+      "Clip name", clip.name,
+      "Rot 3d", rotationRaw.rot3d,
+          "Has Position:", hasNoPosition, 
+          "No Rotation Object:", hasNoRotation, 
+          "Is Rot 0:", isRotationZero
+      );
+
+
+    // Dimensões do vídeo aplicadas via escala
+    const w = (clip.dimensions?.x || img.width) * zoom;
+    const h = (clip.dimensions?.y || img.height) * zoom;
+
+    // --- COMPENSAÇÃO DE PIVOT (A LÓGICA DO CENTER DO PYTHON) ---
+    
+    // No Python: center = (w/2, h/2). 
+    // No Three.js: O Group deve estar no centro do objeto para que a rotação seja interna.
+    // pos.x e pos.y são o Top-Left da sua UI.
+    group.position.set(
+      pos.x + (w / 2) + ajustcenter, 
+      -(pos.y + (h / 2)), 
+      index * 0.1 // Z-index para não haver conflito de sobreposição
+    );
+
+    // 1. Rotação 2D (matrix_2d do Python) -> Aplicada ao Grupo
+    // Invertemos o sinal para bater com o comportamento do OpenCV
+    group.rotation.z = THREE.MathUtils.degToRad(-rotation.rot);
+
+    // 2. Rotação 3D (warpPerspective do Python) -> Aplicada ao Mesh
+    // O Mesh gira em torno do eixo Y que passa pelo (0,0,0) local, que é o centro do plano.
+    mesh.rotation.y = THREE.MathUtils.degToRad(rotation.rot3d);
+    
+    // Ajuste de escala final
+    mesh.scale.set(w, h, 1);
+
+    // --- BLEND MODES (SCREEN/OVERLAY) ---
+    mat.opacity = opacity;
+    const mode = (clip.blendmode || 'normal').toLowerCase();
+    
+    // Reset para CustomBlending para suportar as equações que te passei antes
+    mat.blending = THREE.CustomBlending;
+    mat.blendEquation = THREE.AddEquation;
+    mat.blendSrc = THREE.SrcAlphaFactor;
+    mat.blendDst = THREE.OneMinusSrcAlphaFactor;
+
+    switch (mode) {
+      case 'screen':
+        mat.blendSrc = THREE.OneFactor;
+        mat.blendDst = THREE.OneMinusSrcColorFactor;
+        break;
+      case 'lineardodge':
+      case 'add':
+        mat.blendSrc = THREE.OneFactor;
+        mat.blendDst = THREE.OneFactor;
+        break;
+      case 'multiply':
+        mat.blending = THREE.MultiplyBlending;
+        break;
+      case 'overlay':
+        mat.blendSrc = THREE.DstColorFactor;
+        mat.blendDst = THREE.SrcColorFactor;
+        break;
+      default:
+        mat.blending = THREE.NormalBlending;
+        break;
+    }
+  });
+};
+
+
+
+const syncClipsToScene_old = (loadedData: { id: string, img: HTMLImageElement, clip: any }[], time: number) => {
+  const scene = sceneRef.current;
+  if (!scene || !rendererRef.current) return;
+
+  // 1. Identificar IDs ativos para limpeza
+  const loadedIds = new Set(loadedData.map(d => d.id));
+  
+  // Limpeza de clips que saíram do tempo da timeline
+  groupsRef.current.forEach((group, id) => {
+    if (!loadedIds.has(id)) {
+      scene.remove(group);
+      const mesh = group.children[0] as THREE.Mesh;
+      if (mesh.material instanceof THREE.MeshBasicMaterial && mesh.material.map) {
+        mesh.material.map.dispose();
+      }
+      groupsRef.current.delete(id);
+    }
+  });
+
+  // 2. Processar cada clip carregado
+  loadedData.forEach(({ id, img, clip }, index) => {
+    let group = groupsRef.current.get(id);
+    let mesh: THREE.Mesh;
+
+    if (!group) {
+      // Criar Grupo (Pivot Externo)
+      group = new THREE.Group();
+      
+      // Criar Geometria 1x1 e CENTRALIZAR (Resolve o erro da borda colada)
+      const geometry = new THREE.PlaneGeometry(1, 1);
+      geometry.center(); 
+
+      const material = new THREE.MeshBasicMaterial({ 
+        transparent: true, 
+        side: THREE.DoubleSide,
+        depthWrite: false // Crucial para transparência e blend modes
+      });
+
+      mesh = new THREE.Mesh(geometry, material);
+      
+      // Ordem de rotação: primeiro Y (3D), depois X e Z
+      mesh.rotation.order = 'YXZ'; 
+      
+      group.add(mesh);
+      scene.add(group);
+      groupsRef.current.set(id, group);
+    } else {
+      mesh = group.children[0] as THREE.Mesh;
+    }
+
+    // --- ATUALIZAÇÃO DA TEXTURA ---
     const texture = new THREE.Texture(img);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.needsUpdate = true;
@@ -1566,92 +1794,101 @@ const syncClipsToScene = (loadedData: any[], time: number) => {
     if (mat.map) mat.map.dispose();
     mat.map = texture;
 
-    // --- CÁLCULO DE KEYFRAMES COM FALLBACKS ---
-
-    // 1. Opacidade (Padrão 1 se não houver keyframe)
+    // --- INTERPOLAÇÃO DE VALORES (COM FALLBACKS SEGUROS) ---
     const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
-
-    // 2. Zoom (Padrão 1 se não houver keyframe)
     const zoom = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-
-    // 3. Posição (Padrão 0,0 se não houver keyframe)
     const pos = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-
-    // 4. Rotação (AQUI ESTÁ O ERRO: Precisamos garantir que rot e rot3d sejam números)
     const rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d');
+
+
+    // 0 - 90   -91 - -181
+
+    /*
+    
+
+    let ajustcenter = clip.dimentions.x/8;
+    
+    if(
+    ( !(0 <= rotationRaw.rot3d) && ( rotationRaw.rot3d <= 90)) || 
+    (     !(-181 <= rotationRaw.rot3d) && ( rotationRaw.rot3d <= -91)  ) 
+    )
+    {
+        ajustcenter = -1 * ajustcenter
+    }
+
+    if(clip.keyframes.position)
+    {
+        ajustcenter = 0
+    }
+
+    console.log('ajust', ajustcenter)
+
+    
+    */
+    
     const rotation = {
       rot: rotationRaw?.rot ?? 0,
       rot3d: rotationRaw?.rot3d ?? 0
     };
 
-    // --- APLICAÇÃO DAS DIMENSÕES ---
+    // Dimensões calculadas
     const w = (clip.dimensions?.x || img.width) * zoom;
     const h = (clip.dimensions?.y || img.height) * zoom;
 
-    // --- APLICAÇÃO NO THREE.JS ---
+    // --- POSICIONAMENTO E CAMADAS ---
+    // O index define o Z: clips posteriores no array ficam à frente
+    group.position.set(
+      pos.x + (w / 2),  //+ ajustcenter, 
+      -(pos.y + (h / 2)), 
+      index * 0.5 
+    );
 
-    // Grupo: Posição e Rotação Z (2D)
-    group.position.set(pos.x + w / 2, -(pos.y + h / 2), index * 0.5);
-    group.rotation.z = THREE.MathUtils.degToRad(-(rotation.rot || 0));
+    // Rotação 2D (Z) aplicada ao grupo
+    group.rotation.z = THREE.MathUtils.degToRad(-rotation.rot);
 
-    // Mesh: Escala e Rotação Y (3D)
+    // Escala e Rotação 3D (Y) aplicada ao mesh (Gira no centro exato)
     mesh.scale.set(w, h, 1);
-    mesh.rotation.y = THREE.MathUtils.degToRad(rotation.rot3d || 0);
+    mesh.rotation.y = THREE.MathUtils.degToRad(rotation.rot3d);
 
-    // Material
-    mat.transparent = true;
+    // --- CONFIGURAÇÃO DE BLEND MODES ---
     mat.opacity = opacity;
+    const mode = (clip.blendmode || 'normal').toLowerCase();
 
-
-
-    // --- TRATAMENTO DE BLEND MODES ---
-    
-    // 2. Fallback total: se não houver clip.blendmode, usa 'normal'
-    const userBlendMode = (clip.blendmode || 'normal').toLowerCase();
-
-    // 3. Mapeamento seguro para constantes do Three.js
-    let threeJSBlending: THREE.Blending;
-    mat.premultipliedAlpha = true
-
+    // Reset para CustomBlending para suportar Screen e Overlay
     mat.blending = THREE.CustomBlending;
     mat.blendEquation = THREE.AddEquation;
     mat.blendSrc = THREE.SrcAlphaFactor;
     mat.blendDst = THREE.OneMinusSrcAlphaFactor;
 
-    switch (userBlendMode) {
+    switch (mode) {
       case 'screen':
         mat.blendSrc = THREE.OneFactor;
         mat.blendDst = THREE.OneMinusSrcColorFactor;
-        mat.blendEquation = THREE.AddEquation;
         break;
-      case 'multiply':
-        threeJSBlending = THREE.MultiplyBlending;
-        break;
+
       case 'lineardodge':
       case 'add':
-        threeJSBlending = THREE.AdditiveBlending;
+        mat.blendSrc = THREE.OneFactor;
+        mat.blendDst = THREE.OneFactor;
         break;
+
+      case 'multiply':
+        mat.blending = THREE.MultiplyBlending;
+        break;
+
       case 'overlay':
         mat.blendSrc = THREE.DstColorFactor;
         mat.blendDst = THREE.SrcColorFactor;
-        mat.blendEquation = THREE.AddEquation;
         break;
+
       case 'normal':
       default:
-        threeJSBlending = THREE.NormalBlending;
+        mat.blending = THREE.NormalBlending;
         break;
     }
-
-    // Só aplica se o valor for diferente do atual (otimização de performance)
-   
-
-    // IMPORTANTE: Para o CapCut, o depthWrite como false evita que a "caixa" invisível
-    // de um clipe com blend mode corte o vídeo que está atrás.
-    mat.depthWrite = false;
-
-
   });
 };
+
 
 
 const drawFrame = async (time: number) => {
@@ -5371,7 +5608,8 @@ return (
     </AnimatePresence>
 
     {isSetupOpen ? (
-      /* --- PROJECT MANAGER VIEW --- */
+      /* --- PROJECT MANAGER VIEW ---
+      <button onClick={handleSelectRoot} className="w-full flex items-center gap-3 px-4 py-2 hover:bg-zinc-900 text-zinc-500 rounded-lg text-sm transition-colors"><FolderOpen size={18} /> Workspace</button>  */
       <div className="flex flex-col h-full w-full bg-[#0a0a0a]">
         <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-8 bg-[#111]">
           <div className="flex items-center gap-4">
@@ -5382,13 +5620,13 @@ return (
             />
             <h1 className="text-lg text-white"> Free<span className='font-bold'>Cut</span> <span className="text-zinc-500 font-light text-sm not-italic">MANAGER</span></h1>
           </div>
-          <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Settings size={20} /></button>
+          <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400" onClick={() => setIsSettingsOpen(true)}><Settings size={20} /></button>
         </header>
 
         <main className="flex-1 flex overflow-hidden">
           <aside className="w-64 border-r border-zinc-800 p-6 space-y-2 bg-[#0d0d0d]">
             <button className="w-full flex items-center gap-3 px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm font-bold"><Clock size={18} /> Recent</button>
-            <button onClick={handleSelectRoot} className="w-full flex items-center gap-3 px-4 py-2 hover:bg-zinc-900 text-zinc-500 rounded-lg text-sm transition-colors"><FolderOpen size={18} /> Workspace</button>
+            
           </aside>
 
           <section className="flex-1 p-10 overflow-y-auto">
@@ -5447,7 +5685,7 @@ return (
         {/* Editor Header */}
         <header className="h-12 border-b border-zinc-800 flex items-center justify-between px-4 bg-[#111] z-10 shadow-md">
           <div className="flex items-center gap-4">
-            <button onClick={() => setIsSetupOpen(true)} className="text-zinc-500 hover:text-white text-[10px] font-bold">BACK</button>
+            <button onClick={() => {setIsSetupOpen(true); setIsProjectLoaded(false)}} className="text-zinc-500 hover:text-white text-[10px] font-bold">BACK</button>
             <h1 className="text-[11px] font-black uppercase text-white tracking-widest">{projectName}</h1>
           </div>
           <div className="flex items-center gap-3">
@@ -6690,12 +6928,13 @@ return (
 
 
   {/* Project Config */}
-  <ProjectSettingsModal 
+  <SettingsModal 
     isOpen={isSettingsOpen}
-    key={projectConfig.name} 
-    onClose={() => setIsSettingsOpen(false)} 
-    currentSettings={projectConfig}
-    onSave={handleSaveSettings}
+    onClose={() => setIsSettingsOpen(false)}
+    currentProjectSettings={projectConfig}
+    onSaveProject={handleSaveSettings}
+    isProjectLoaded = {isProjectLoaded}
+   
   />
   </div>
 );
