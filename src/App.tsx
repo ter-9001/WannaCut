@@ -98,6 +98,7 @@ interface ProjectSettings {
 interface Project {
   name: string;
   path: string;
+  thumbnail?:string;
 }
 
 interface Keyframe {
@@ -134,7 +135,7 @@ interface Clip {
   fadeout?: number;
   fadeinAudio?: number;
   fadeoutAudio?: number;
-  dimentions?: Position | null;
+  dimensions?: Position | null;
   scale?: number;
   keyframes?: {
   volume?: Keyframe[];
@@ -168,7 +169,7 @@ interface Asset {
   duration: number;   
   type: 'video' | 'audio' | 'image';
   thumbnailUrl?: string; // URL genarate by FFmpeg
-  dimentions?: Position
+  dimensions?: Position
 }
 
 interface Tracks
@@ -384,7 +385,7 @@ const [freecutSettings, setFreecutSettings] = useState({
 useEffect(() => {
   const checkConfig = async () => {
 
-    console.log('entrou em check configs')
+    console.log('entrou em check configs',localStorage.getItem("freecut_settings_folder"))
     const settingsFolder = localStorage.getItem("freecut_settings_folder");
     
 
@@ -404,6 +405,7 @@ useEffect(() => {
         // Se o workspace estiver vazio, também precisamos alertar o usuário
         if (!parsed.workspace) {
            console.warn("Workspace não definido nas configurações.");
+           setIsSettingsOpen(true);
         }
 
         console.log('workspace:', parsed.workspace)
@@ -412,6 +414,8 @@ useEffect(() => {
 
       } catch (e) {
         console.error("Falha ao ler freecut_settings.json");
+        setIsSettingsOpen(true);
+         
       }
     }
   };
@@ -1572,7 +1576,165 @@ const fetchFramesFromRust = async (time: number) => {
   return results.filter((res): res is {id: string, img: HTMLImageElement, clip: any} => res !== null);
 };
 
+
+
 const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement, clip: any }[], time: number) => {
+  const scene = sceneRef.current;
+  if (!scene || !rendererRef.current) return;
+
+  // 0. CONFIGURAÇÕES DO PROJETO (Pegue do seu estado global/props)
+  // Supondo que projectConfig venha do seu contexto de projeto
+  const projW = projectConfig.width; 
+  const projH = projectConfig.height;
+  const projectAspect = projW / projH;
+
+  const loadedIds = new Set(loadedData.map(d => d.id));
+  
+  // 1. LIMPEZA (GC)
+  groupsRef.current.forEach((group, id) => {
+    if (!loadedIds.has(id)) {
+      scene.remove(group);
+      const mesh = group.children[0] as THREE.Mesh;
+      if (mesh.material instanceof THREE.MeshBasicMaterial && mesh.material.map) {
+        mesh.material.map.dispose();
+      }
+      groupsRef.current.delete(id);
+    }
+  });
+
+  // 2. RENDERIZAÇÃO
+  loadedData.forEach(({ id, img, clip }, index) => {
+    let group = groupsRef.current.get(id);
+    let mesh: THREE.Mesh;
+
+    if (!group) {
+      group = new THREE.Group();
+      const geometry = new THREE.PlaneGeometry(1, 1);
+      geometry.center(); 
+      const material = new THREE.MeshBasicMaterial({ 
+        transparent: true, 
+        side: THREE.DoubleSide,
+        depthWrite: false 
+      });
+      mesh = new THREE.Mesh(geometry, material);
+      mesh.rotation.order = 'YXZ'; 
+      group.add(mesh);
+      scene.add(group);
+      groupsRef.current.set(id, group);
+    } else {
+      mesh = group.children[0] as THREE.Mesh;
+    }
+
+    // --- TEXTURA ---
+    const texture = new THREE.Texture(img);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+    const mat = mesh.material as THREE.MeshBasicMaterial;
+    if (mat.map) mat.map.dispose();
+    mat.map = texture;
+
+    // --- INTERPOLAÇÃO DE VALORES ---
+    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
+    const rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d') || { rot: 0, rot3d: 0 };
+    
+    // Verificação de Keyframes para a "Trava" de Fullscreen
+    const hasPositionKfs = clip.keyframes?.position && Object.keys(clip.keyframes.position).length > 0;
+    const hasZoomKfs = clip.keyframes?.zoom && Object.keys(clip.keyframes.zoom).length > 0;
+
+    // --- LÓGICA DE DIMENSÃO INTELIGENTE (AUTO-FILL) ---
+    const clipW = clip.dimensions?.x || img.width;
+    const clipH = clip.dimensions?.y || img.height;
+    const clipAspect = clipW / clipH;
+
+    // Diferença mínima para considerar "mesmo aspect ratio" (float precision)
+    const isSameAspect = Math.abs(clipAspect - projectAspect) < 0.01;
+
+    let finalW: number;
+    let finalH: number;
+    let finalPosX: number;
+    let finalPosY: number;
+
+    if (isSameAspect) {
+      // Se o Aspect é igual, a base de tamanho é o projeto inteiro
+      finalW = projW;
+      finalH = projH;
+
+      if (!hasPositionKfs && !hasZoomKfs) {
+        // Caso padrão: Sem chaves = Centralizado e Tela Cheia
+        finalPosX = 0; // No seu sistema de coordenadas, 0 é o centro se compensado corretamente
+        finalPosY = 0;
+      } else {
+        // Se houver chaves, pegamos os valores interpolados
+        const zoomK = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
+        const posK = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
+        
+        finalW *= zoomK;
+        finalH *= zoomK;
+        finalPosX = posK.x;
+        finalPosY = posK.y;
+      }
+    } else {
+      // Comportamento normal para clips com aspect ratio diferente
+      const zoomVal = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
+      const posVal = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
+      
+      finalW = clipW * zoomVal;
+      finalH = clipH * zoomVal;
+      finalPosX = posVal.x;
+      finalPosY = posVal.y;
+    }
+
+    // --- COMPENSAÇÃO DE ROTAÇÃO 3D (Ajuste de Centro) ---
+    let ajustcenter = clip.dimensions ? clip.dimensions.x / 5 : 0;
+    if (rotationRaw.rot3d === 0 || !rotationRaw) {
+        ajustcenter = 0;
+    } else if (!((0 <= rotationRaw.rot3d) && (rotationRaw.rot3d <= 90)) && 
+               !((-181 <= rotationRaw.rot3d) && (rotationRaw.rot3d <= -91))) {
+        ajustcenter = -1 * ajustcenter;
+    }
+
+    // --- POSICIONAMENTO FINAL NO THREE.JS ---
+    // Se for Fullscreen centralizado (sem KFs), o pos.x costuma vir como 0 no Python, 
+    // então a conta (0 + W/2) centraliza o plano na cena.
+    group.position.set(
+      finalPosX + (finalW / 2) + ajustcenter, 
+      -(finalPosY + (finalH / 2)), 
+      index * 0.1 
+    );
+
+    group.rotation.z = THREE.MathUtils.degToRad(-(rotationRaw.rot ?? 0));
+    mesh.rotation.y = THREE.MathUtils.degToRad(rotationRaw.rot3d ?? 0);
+    
+    mesh.scale.set(finalW, finalH, 1);
+
+    // --- ESTILIZAÇÃO ---
+    mat.opacity = opacity;
+    const mode = (clip.blendmode || 'normal').toLowerCase();
+    mat.blending = THREE.NormalBlending; // Default
+
+    switch (mode) {
+      case 'screen':
+        mat.blending = THREE.CustomBlending;
+        mat.blendSrc = THREE.OneFactor;
+        mat.blendDst = THREE.OneMinusSrcColorFactor;
+        break;
+      case 'add':
+        mat.blending = THREE.AdditiveBlending;
+        break;
+      case 'multiply':
+        mat.blending = THREE.MultiplyBlending;
+        break;
+      // Adicione outros conforme necessário
+    }
+  });
+};
+
+
+
+
+
+
+const syncClipsToScene_old = (loadedData: { id: string, img: HTMLImageElement, clip: any }[], time: number) => {
   const scene = sceneRef.current;
   if (!scene || !rendererRef.current) return;
 
@@ -1642,7 +1804,8 @@ const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement, clip:
       rot3d: rotationRaw?.rot3d ?? 0
     };
 
-    let ajustcenter = clip.dimentions.x/5;
+
+    let ajustcenter = clip.dimensions ? clip.dimensions.x/5 : 0;
     
     if(
     ( !(0 <= rotationRaw.rot3d) && ( rotationRaw.rot3d <= 90)) || 
@@ -1654,7 +1817,7 @@ const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement, clip:
 
   const isRotationZero = rotationRaw.rot3d === 0;
   const hasNoRotation = !rotationRaw;
-  const hasNoPosition = !clip.keyframes.position;
+  const hasNoPosition = !clip.keyframes?.position;
 
   if (hasNoRotation) 
     ajustcenter = 0;
@@ -1734,160 +1897,6 @@ const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement, clip:
 };
 
 
-
-const syncClipsToScene_old = (loadedData: { id: string, img: HTMLImageElement, clip: any }[], time: number) => {
-  const scene = sceneRef.current;
-  if (!scene || !rendererRef.current) return;
-
-  // 1. Identificar IDs ativos para limpeza
-  const loadedIds = new Set(loadedData.map(d => d.id));
-  
-  // Limpeza de clips que saíram do tempo da timeline
-  groupsRef.current.forEach((group, id) => {
-    if (!loadedIds.has(id)) {
-      scene.remove(group);
-      const mesh = group.children[0] as THREE.Mesh;
-      if (mesh.material instanceof THREE.MeshBasicMaterial && mesh.material.map) {
-        mesh.material.map.dispose();
-      }
-      groupsRef.current.delete(id);
-    }
-  });
-
-  // 2. Processar cada clip carregado
-  loadedData.forEach(({ id, img, clip }, index) => {
-    let group = groupsRef.current.get(id);
-    let mesh: THREE.Mesh;
-
-    if (!group) {
-      // Criar Grupo (Pivot Externo)
-      group = new THREE.Group();
-      
-      // Criar Geometria 1x1 e CENTRALIZAR (Resolve o erro da borda colada)
-      const geometry = new THREE.PlaneGeometry(1, 1);
-      geometry.center(); 
-
-      const material = new THREE.MeshBasicMaterial({ 
-        transparent: true, 
-        side: THREE.DoubleSide,
-        depthWrite: false // Crucial para transparência e blend modes
-      });
-
-      mesh = new THREE.Mesh(geometry, material);
-      
-      // Ordem de rotação: primeiro Y (3D), depois X e Z
-      mesh.rotation.order = 'YXZ'; 
-      
-      group.add(mesh);
-      scene.add(group);
-      groupsRef.current.set(id, group);
-    } else {
-      mesh = group.children[0] as THREE.Mesh;
-    }
-
-    // --- ATUALIZAÇÃO DA TEXTURA ---
-    const texture = new THREE.Texture(img);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.needsUpdate = true;
-    
-    const mat = mesh.material as THREE.MeshBasicMaterial;
-    if (mat.map) mat.map.dispose();
-    mat.map = texture;
-
-    // --- INTERPOLAÇÃO DE VALORES (COM FALLBACKS SEGUROS) ---
-    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
-    const zoom = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-    const pos = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-    const rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d');
-
-
-    // 0 - 90   -91 - -181
-
-    /*
-    
-
-    let ajustcenter = clip.dimentions.x/8;
-    
-    if(
-    ( !(0 <= rotationRaw.rot3d) && ( rotationRaw.rot3d <= 90)) || 
-    (     !(-181 <= rotationRaw.rot3d) && ( rotationRaw.rot3d <= -91)  ) 
-    )
-    {
-        ajustcenter = -1 * ajustcenter
-    }
-
-    if(clip.keyframes.position)
-    {
-        ajustcenter = 0
-    }
-
-    console.log('ajust', ajustcenter)
-
-    
-    */
-    
-    const rotation = {
-      rot: rotationRaw?.rot ?? 0,
-      rot3d: rotationRaw?.rot3d ?? 0
-    };
-
-    // Dimensões calculadas
-    const w = (clip.dimensions?.x || img.width) * zoom;
-    const h = (clip.dimensions?.y || img.height) * zoom;
-
-    // --- POSICIONAMENTO E CAMADAS ---
-    // O index define o Z: clips posteriores no array ficam à frente
-    group.position.set(
-      pos.x + (w / 2),  //+ ajustcenter, 
-      -(pos.y + (h / 2)), 
-      index * 0.5 
-    );
-
-    // Rotação 2D (Z) aplicada ao grupo
-    group.rotation.z = THREE.MathUtils.degToRad(-rotation.rot);
-
-    // Escala e Rotação 3D (Y) aplicada ao mesh (Gira no centro exato)
-    mesh.scale.set(w, h, 1);
-    mesh.rotation.y = THREE.MathUtils.degToRad(rotation.rot3d);
-
-    // --- CONFIGURAÇÃO DE BLEND MODES ---
-    mat.opacity = opacity;
-    const mode = (clip.blendmode || 'normal').toLowerCase();
-
-    // Reset para CustomBlending para suportar Screen e Overlay
-    mat.blending = THREE.CustomBlending;
-    mat.blendEquation = THREE.AddEquation;
-    mat.blendSrc = THREE.SrcAlphaFactor;
-    mat.blendDst = THREE.OneMinusSrcAlphaFactor;
-
-    switch (mode) {
-      case 'screen':
-        mat.blendSrc = THREE.OneFactor;
-        mat.blendDst = THREE.OneMinusSrcColorFactor;
-        break;
-
-      case 'lineardodge':
-      case 'add':
-        mat.blendSrc = THREE.OneFactor;
-        mat.blendDst = THREE.OneFactor;
-        break;
-
-      case 'multiply':
-        mat.blending = THREE.MultiplyBlending;
-        break;
-
-      case 'overlay':
-        mat.blendSrc = THREE.DstColorFactor;
-        mat.blendDst = THREE.SrcColorFactor;
-        break;
-
-      case 'normal':
-      default:
-        mat.blending = THREE.NormalBlending;
-        break;
-    }
-  });
-};
 
 
 
@@ -3571,7 +3580,7 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
 
   const type = knowTypeByAssetName(assetName, true);
 
-  const dimentions = assets.find( a => a.name === assetName)?.dimentions || null
+  const dimensions = assets.find( a => a.name === assetName)?.dimensions || null
 
     
     setTracks(  (prev) => 
@@ -3608,7 +3617,7 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
             trackId: newTrackId,
             maxduration: duration,
             beginmoment: beginmoment ? beginmoment : deleteClip ? deleteClip.beginmoment : 0,
-            dimentions: dimentions,
+            dimensions: dimensions,
             scale: 1
           };
 
@@ -3773,6 +3782,9 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
   //3. Calculating the time using the updated value of PIXELS_PER_SECOND
   // last term is to calibrate with newzoom
   const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND) * (2/pixelsPerSecond);
+
+
+
   
   //console.log(`Mouse X: ${mouseX}, Rect Left: ${rect.left}, Scroll: ${scrollLeft}, Final Time: ${dropTime}`);
   
@@ -3792,6 +3804,10 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
           showNotify("Invalid file type: Only video, audio, and images are allowed", "error");
           return;
         }
+
+
+       // console.log('curentproject0', currentProjectPath, path)
+
 
 
 
@@ -3824,13 +3840,14 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
         }
 
 
+       // console.log('curentproject', currentProjectPath, path)
 
       try {
         await invoke('import_asset', { projectPath: currentProjectPath, filePath: path });
         const fileName = path.split(/[\\/]/).pop() || "Asset";
 
         var meta
-        var dimentions: Position | null
+        var dimensions: Position | null
         
         try
         {
@@ -3847,12 +3864,12 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
         {
             try
             {
-              dimentions = await invoke< Position >('get_asset_dimensions', { path: path });
+              dimensions = await invoke< Position >('get_asset_dimensions', { path: path });
               
             }
             catch (err)
             {
-              dimentions = null
+              dimensions = null
             }
         }
         
@@ -3913,12 +3930,12 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
               trackId: targetTrackId,
               maxduration: duration ? duration : 10,
               beginmoment: 0,
-              dimentions: dimentions,
+              dimensions: dimensions,
               scale: 1
             }]);
 
 
-            setTracks( prev =>[... prev, {id: targetTrackId, type: knowTypeByAssetName(fileName, true)}]
+            setTracks( prev =>[... prev, {id: targetTrackId, type: knowTypeByAssetName(fileName, true) as 'video' | 'audio'}]
             )
           
 
@@ -4019,6 +4036,7 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
     try {
       const list = await invoke('list_projects', { rootPath });
       setProjects(list as Project[]);
+      console.log('project', list)
     } catch (e) { console.error(e); }
   };
 
@@ -4037,7 +4055,7 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
       if (['mp3', 'wav', 'ogg'].includes(extension || '')) type = 'audio';
 
       let duration = 10;
-      let dimentions: Position | null = null
+      let dimensions: Position | null = null
 
       if (type !== 'image') {
         try {
@@ -4066,7 +4084,7 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
       if((type == 'video') || (type == 'image'))
       {
            try {
-            dimentions =  await invoke('get_asset_dimensions', { 
+            dimensions =  await invoke('get_asset_dimensions', { 
               path: filePath
             });
 
@@ -4097,7 +4115,7 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
           duration: duration,
           type: type,
           thumbnailUrl: thumbPath,
-          dimentions: dimentions          
+          dimensions: dimensions          
         } as Asset;
 
 
@@ -4137,12 +4155,16 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
         config: projectConfig // O estado que você já está atualizando no onChange
       });
 
+      
+      console.log('setup', rootPath, projectName)
+
       // 2. Atualizamos o estado do caminho do projeto atual
       setCurrentProjectPath(finalPath);
 
       // 3. UI Updates
       setIsCreatingNew(false);
       loadProjects();
+
       showNotify("Project Created!", "success");
       
       console.log("Project initialized at:", finalPath);
@@ -4153,21 +4175,6 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
   }
 };
 
-  const handleFinishSetup_old = async () => {
-    if (rootPath && projectName) {
-      try {
-        const finalPath = await invoke('create_project_folder', { rootPath, projectName });
-        //localStorage.setItem("current_project_path", finalPath as string);
-        setCurrentProjectPath(finalPath as String)
-
-        setIsCreatingNew(false);
-        loadProjects();
-        showNotify("Project Created!", "success");
-      } catch (e) {
-        showNotify("Error creating project", "error");
-      }
-    }
-  };
 
 const openProject = async (path: string) => {
 
@@ -4420,7 +4427,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       const assetNow = assets.find(a => a.name === droppedClip.name);
 
 
-      console.log('assetNow di', assetNow?.dimentions)
+      console.log('assetNow di', assetNow?.dimensions)
       
       // 2. Set the default duration safely.
       // If assetNow exists and is greater than 10, use 10. Otherwise, use its duration or 5 (total fallback).
@@ -4443,7 +4450,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
             trackId: trackId,
             maxduration: totalMaxDuration,
             beginmoment: droppedClip.beginmoment,
-            dimentions: assetNow?.dimentions ? assetNow?.dimentions : null,
+            dimensions: assetNow?.dimensions ? assetNow?.dimensions : null,
             scale: 1
           };
 
@@ -4556,7 +4563,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
           trackId: trackId,
           maxduration: totalMaxDuration,
           beginmoment: 0,
-          dimentions: assetNow?.dimentions ? assetNow?.dimentions : null,
+          dimensions: assetNow?.dimensions ? assetNow?.dimensions : null,
           scale: 1
         };
 
@@ -5667,9 +5674,14 @@ return (
                   >
                     <X size={14} /> 
                   </button>
-                  <div className="aspect-video bg-[#1a1a1a] flex items-center justify-center border-b border-zinc-800">
-                    <LayoutGrid size={40} className="text-zinc-800 group-hover:text-fuchsia-800/20" />
-                  </div>
+                  {proj.thumbnail ? (
+                    <img src={convertFileSrc(proj.thumbnail)} alt="Preview" />
+                  ) : (
+                    <div className="aspect-video bg-[#1a1a1a] flex items-center justify-center border-b border-zinc-800">
+                      <LayoutGrid size={40} className="text-zinc-800 group-hover:text-fuchsia-800/20" />
+                    </div>
+                  )}
+                  
                   <div className="p-5">
                     <h3 className="font-bold text-zinc-100 truncate text-sm uppercase">{proj.name}</h3>
                   </div>
@@ -5969,8 +5981,8 @@ return (
                             //variaveis temporarias 
 
                             const scale = getInterpolatedValueWithFades(currentTimeRef.current, clip , 'zoom') || 1
-                            const clipWidth = clip?.dimentions?.x || projectConfig.width
-                            const clipHeight = clip?.dimentions?.y|| projectConfig.height
+                            const clipWidth = clip?.dimensions?.x || projectConfig.width
+                            const clipHeight = clip?.dimensions?.y|| projectConfig.height
 
 
 
@@ -6093,7 +6105,7 @@ return (
               <div className="text-[10px] font-mono text-zinc-400 flex items-center gap-2 bg-black/40 px-3 py-1 rounded border border-zinc-800/50">
                 <Clock size={12} className="text-zinc-600" />
                 <span className="text-white font-bold tracking-widest min-w-[80px]">
-                  {formatTime(currentTimeRef.current)}
+                  {formatTime(currentTime)}
                 </span>
               </div>
 
@@ -6934,6 +6946,7 @@ return (
     currentProjectSettings={projectConfig}
     onSaveProject={handleSaveSettings}
     isProjectLoaded = {isProjectLoaded}
+    showNotify = {showNotify}
    
   />
   </div>

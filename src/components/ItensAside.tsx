@@ -57,6 +57,13 @@ export const ItensAside = ({
     { id: 'Transitions', icon: <Layers size={20} />, label: 'Transitions', color: 'blue' },
   ];
 
+
+  const colorMap: Record<string, string> = {
+    fuchsia: "bg-fuchsia-600/20 text-fuchsia-400",
+    cyan: "bg-cyan-600/20 text-cyan-400",
+    purple: "bg-purple-600/20 text-purple-400",
+    blue: "bg-blue-600/20 text-blue-400",
+  };
   return (
     <aside
       style={{ width: `${sidebarWidth}px` }}
@@ -70,7 +77,7 @@ export const ItensAside = ({
             onClick={() => setActiveTab(item.id)}
             className={`group relative flex items-center justify-center w-10 h-10 rounded-xl cursor-pointer transition-all ${
               activeTab === item.id 
-                ? `bg-${item.color}-600/20 text-${item.color}-400`
+                ? colorMap[item.color]
                 : 'text-zinc-500 hover:bg-white/5 hover:text-zinc-200'
             }`}
           >
@@ -175,7 +182,7 @@ export const ItensAside = ({
                         setOutPoint(0);
                         setCurrentTime2(0);
                       }}
-                      className={`group relative aspect-video bg-[#1a1a1a] rounded-lg overflow-hidden border border-white/5 hover:border-red-600/50 transition-colors cursor-pointer
+                      className={`group relative aspect-video bg-[#1a1a1a] rounded-lg overflow-hidden border border-white/5 hover:border-cyan-500 transition-colors cursor-pointer
                       ${selectedAssets.includes(asset) ? 'bg-red-500/10 border-red-500' : 'bg-[#151515] border-zinc-800 hover:border-zinc-600'}`}
                       draggable="true"
                       onDragStart={(e) => handleDragStart(e, null, null, null, asset.name, false, null)}
@@ -237,50 +244,6 @@ export const ItensAside = ({
               </div>
             </aside>
 
-            {/* Assets Grid */}
-            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-              <div className="grid grid-cols-2 gap-3">
-                {filteredAssets.length > 0 ? (
-                  filteredAssets.map((asset) => (
-                    <motion.div
-                      key={asset.id}
-                      layout
-                      draggable
-                      onDragStart={(e) => handleDragStart(e, asset)}
-                      onClick={(e) => toggleAssetSelection(asset, e.ctrlKey || e.metaKey)}
-                      onDoubleClick={() => setSourceAsset(asset)}
-                      className={`group relative aspect-video rounded-lg overflow-hidden border transition-all cursor-grab active:cursor-grabbing ${
-                        selectedAssets.some(a => a.id === asset.id)
-                          ? 'border-cyan-500 ring-1 ring-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.3)]'
-                          : 'border-white/5 hover:border-white/20'
-                      }`}
-                    >
-                      {/* Thumbnail logic (simplificada para o exemplo) */}
-                      <div className="absolute inset-0 bg-zinc-900 flex items-center justify-center">
-                        {asset.type === 'video' ? <Play size={20} className="text-white/20" /> : <ImageIcon size={20} className="text-white/20" />}
-                      </div>
-
-                      {/* Badge Type */}
-                      <div className="absolute top-2 left-2 p-1.5 rounded-md bg-black/60 backdrop-blur-md border border-white/10">
-                        {asset.type === 'video' ? <Film size={12} className="text-cyan-400" /> : <Music size={12} className="text-purple-400" />}
-                      </div>
-
-                      {/* Info Overlay */}
-                      <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-                        <p className="text-[9px] text-white truncate font-bold uppercase tracking-wider">
-                          {asset.name}
-                        </p>
-                      </div>
-                    </motion.div>
-                  ))
-                ) : (
-                  <div className="col-span-full py-20 text-center opacity-40">
-                    <Search size={32} className="mx-auto mb-3" />
-                    <p className="text-[10px] uppercase tracking-widest font-bold">No assets found</p>
-                  </div>
-                )}
-              </div>
-            </div>
           </>
         ) : (
           /* Placeholder para as outras abas */

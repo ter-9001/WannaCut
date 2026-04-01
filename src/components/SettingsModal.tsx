@@ -29,6 +29,7 @@ interface Props {
   currentProjectSettings: ProjectSettings;
   onSaveProject: (settings: ProjectSettings) => void;
   isProjectLoaded: boolean;
+  showNotify: (message: string, type: 'success' | 'error') => void;
 }
 
 export const SettingsModal: React.FC<Props> = ({ 
@@ -36,7 +37,8 @@ export const SettingsModal: React.FC<Props> = ({
   onClose, 
   currentProjectSettings, 
   onSaveProject,
-  isProjectLoaded 
+  isProjectLoaded,
+  showNotify 
 }) => {
   // Ajuste: Se não houver projeto, a aba inicial DEVE ser 'freecut' (System)
   const [activeTab, setActiveTab] = useState(isProjectLoaded ? 'project' : 'freecut');
@@ -103,19 +105,74 @@ export const SettingsModal: React.FC<Props> = ({
     });
   };
 
+
   const handleSelectFolder = async (type: 'settings' | 'workspace') => {
-    const selected = await open({ directory: true, multiple: false });
-    if (selected && typeof selected === 'string') {
-      if (type === 'settings') {
-        localStorage.setItem("freecut_settings_folder", selected);
-        await invoke('init_settings_structure', { path: selected });
-      } else {
-        const newS = { ...freeCutSettings, workspace: selected };
-        setFreeCutSettings(newS);
-        saveFreeCutSettings(newS);
+    const selectedBase = await open({ directory: true, multiple: false });
+    
+    if (selectedBase && typeof selectedBase === 'string') {
+      const subName = type === 'settings' ? 'freecut_settings' : 'project_freecut';
+      const oppositeName = type === 'settings' ? 'project_freecut' : 'freecut_settings';
+
+      if (selectedBase.includes(oppositeName)) {
+        alert(`Hierarchy Error: You cannot select a location that contains or is within "${oppositeName}".`);
+        return;
+      }
+
+      const fullPath = selectedBase.endsWith(subName) 
+        ? selectedBase 
+        : `${selectedBase}/${subName}`;
+
+      const oldPath = type === 'settings' 
+        ? localStorage.getItem("freecut_settings_folder") 
+        : freeCutSettings.workspace;
+
+      if (oldPath && oldPath !== fullPath) {
+        const confirmTransfer = window.confirm(
+          `Do you want to transfer data from:\n${oldPath}\nFor the new location:\n${fullPath}?`
+        );
+
+        if (confirmTransfer) {
+          try {
+            await invoke('transfer_folder_content', { oldPath, newPath: fullPath });
+            //window.location.reload();
+          } catch (err) {
+            showNotify("File migration failed: " + err, 'error');
+            return; 
+          }
+        }
+      }
+
+      try {
+        if (type === 'settings') {
+          localStorage.setItem("freecut_settings_folder", fullPath);
+          
+          await invoke('init_settings_structure', { path: fullPath });
+
+          await loadFreeCutSettings();
+          
+        } else {
+          const newS = { ...freeCutSettings, workspace: fullPath };
+          
+          await invoke('init_workspace_structure', { path: fullPath }); 
+          
+          setFreeCutSettings(newS);
+          
+          await saveFreeCutSettings(newS);
+        }
+        
+        showNotify(`${type} successfully updated to: ${fullPath}`, 'success');
+        //window.location.reload();
+
+
+      } catch (err) {
+        console.error(`Error in configurate dir ${type}:`, err);
+        showNotify("Error initializing folder structure in the system.", 'error');
       }
     }
+
+
   };
+
 
   // Definição das opções com a trava lógica
   const allMenuOptions = [

@@ -52,8 +52,11 @@ pub struct ExportState(pub Mutex<Option<CommandChild>>);
 #[derive(serde::Serialize)]
 struct Project {
     name: String,
-    path: String
+    path: String,
+    thumbnail: Option<String>, 
+
 }
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Dimensions {
@@ -204,6 +207,11 @@ async fn create_project_setup(
         .map_err(|e| format!("Failed to write config file: {}", e))?;
 
     println!("🚀 New project initialized at: {:?}", project_path);
+
+
+    std::fs::create_dir_all(&project_path).map_err(|e| e.to_string())?;
+    std::fs::create_dir(project_path.join("videos")).map_err(|e| e.to_string())?;
+    std::fs::create_dir(project_path.join("exports")).map_err(|e| e.to_string())?;
 
     Ok(project_path.to_string_lossy().into_owned())
 }
@@ -591,22 +599,7 @@ fn list_assets(project_path: String) -> Result<Vec<String>, String> {
     Ok(assets)
 }
 
-#[tauri::command]
-fn create_project_folder(root_path: String, project_name: String) -> Result<String, String> {
-    let mut path = std::path::PathBuf::from(root_path);
-    path.push(&project_name);
 
-    if path.exists() {
-        // Return a specific error if folder already exists
-        return Err("PROJECT_EXISTS".into());
-    }
-
-    std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
-    std::fs::create_dir(path.join("videos")).map_err(|e| e.to_string())?;
-    std::fs::create_dir(path.join("exports")).map_err(|e| e.to_string())?;
-
-    Ok(path.to_string_lossy().into_owned())
-}
 
 #[tauri::command]
 fn list_projects(root_path: String) -> Result<Vec<Project>, String> {
@@ -615,10 +608,36 @@ fn list_projects(root_path: String) -> Result<Vec<Project>, String> {
 
     for path in paths {
         if let Ok(entry) = path {
-            if entry.path().is_dir() {
+            let project_path = entry.path();
+            
+            if project_path.is_dir() {
+                let mut latest_thumbnail = None;
+                let thumb_dir = project_path.join("thumbnails");
+
+                // Tenta ler a pasta de thumbnails
+                if let Ok(thumb_entries) = fs::read_dir(thumb_dir) {
+                    let mut latest_time = std::time::SystemTime::UNIX_EPOCH;
+
+                    for thumb_entry in thumb_entries.flatten() {
+                        let p = thumb_entry.path();
+                        // Verifica se é um arquivo (extensões comuns de imagem)
+                        if p.is_file() {
+                            if let Ok(metadata) = thumb_entry.metadata() {
+                                if let Ok(modified) = metadata.modified() {
+                                    if modified > latest_time {
+                                        latest_time = modified;
+                                        latest_thumbnail = Some(p.to_string_lossy().into_owned());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 projects.push(Project {
                     name: entry.file_name().to_string_lossy().into_owned(),
-                    path: entry.path().to_string_lossy().into_owned(),
+                    path: project_path.to_string_lossy().into_owned(),
+                    thumbnail: latest_thumbnail, // Retorna o caminho ou None
                 });
             }
         }
@@ -825,6 +844,32 @@ fn copy_file(source: String, destination: String) -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+async fn transfer_folder_content(old_path: String, new_path: String) -> Result<(), String> {
+    let old_dir = Path::new(&old_path);
+    let new_dir = Path::new(&new_path);
+
+    if !old_dir.exists() { return Ok(()); } // Nada para transferir
+
+    fs::create_dir_all(new_dir).map_err(|e| e.to_string())?;
+
+    for entry in fs::read_dir(old_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let dest = new_dir.join(entry.file_name());
+        
+        // Se for o arquivo de config ou pastas de assets, movemos
+        if entry.path().is_dir() {
+             // Lógica simples de mover diretório
+             let mut options = fs_extra::dir::CopyOptions::new();
+             options.copy_inside = true;
+             fs_extra::dir::move_dir(&old_dir, &new_dir, &options)
+                .map_err(|err| format!("Error in moving the directory: {}", err))?;
+        } else {
+             fs::rename(entry.path(), dest).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
 
 #[tauri::command]
 async fn get_system_gpus() -> Vec<String> {
@@ -844,24 +889,30 @@ async fn save_settings_file(path: String, content: String) -> Result<(), String>
 }
 
 #[tauri::command]
-async fn init_settings_structure(path: String) -> Result<(), String> {
-    let base = Path::new(&path);
-    let folders = ["effects", "fonts", "transitions"];
+async fn init_workspace_structure(path: String) -> Result<(), String> {
+    let base_path = Path::new(&path);
     
-    for folder in folders {
-        fs::create_dir_all(base.join(folder)).map_err(|e| e.to_string())?;
-    }
-    
-    // Cria o JSON inicial se não existir
-    let json_path = base.join("freecut_settings.json");
-    if !json_path.exists() {
-        let default_config = r#"{"workspace": "", "gpu": null, "shortcuts": ""}"#;
-        fs::write(json_path, default_config).map_err(|e| e.to_string())?;
+    if !base_path.exists() {
+        fs::create_dir_all(base_path).map_err(|e| e.to_string())?;
     }
     
     Ok(())
 }
 
+// Mantenha o seu init_settings_structure apenas para as pastas técnicas:
+#[tauri::command]
+async fn init_settings_structure(path: String) -> Result<(), String> {
+    let base = Path::new(&path);
+    let folders = ["effects", "transitions", "fonts", "presets"];
+    
+    for folder in folders {
+        let p = base.join(folder);
+        if !p.exists() {
+            fs::create_dir_all(p).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
 
 
 
@@ -929,7 +980,6 @@ fn main() {
         // Custom protocol for serving local video files with range-request support
         .manage(ExportState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
-            create_project_folder, 
             list_projects, 
             delete_project, 
             import_asset, 
@@ -958,7 +1008,9 @@ fn main() {
             get_system_gpus, 
             read_settings_file, 
             save_settings_file,
-            init_settings_structure
+            init_settings_structure,
+            init_workspace_structure,
+            transfer_folder_content
            
         ])
         .run(tauri::generate_context!())
