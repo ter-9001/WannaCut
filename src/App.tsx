@@ -119,6 +119,13 @@ interface Rotation
   rot3d: number;
 }
 
+interface Font_Shine
+{
+  size?: number;
+  intensity?: number;
+  color?: string | null; //hexadecimal #ffffff
+}
+
 interface Clip {
   id: string;
   name: string;
@@ -145,6 +152,12 @@ interface Clip {
   position?: Keyframe[];
   zoom?:Keyframe[];
 };
+
+  type?: string | null;
+  text?:string | null;
+  font?: string | null;
+  font_size?: number | null ; // px
+  font_shine?: Font_Shine | null;
   
 
 
@@ -175,7 +188,7 @@ interface Asset {
 interface Tracks
 {
   id: number;
-  type:  'audio' | 'video' | 'effects';
+  type:  'audio' | 'video' | 'effects' | 'text';
   lock?: boolean;
   mute?: boolean;
 
@@ -276,6 +289,44 @@ const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
   }
   selectedClipIdRef.current = null; // Clicou no vazio
 };
+
+
+
+//SYSTEM FOR LOAD FONTS
+
+
+const [availableFonts, setAvailableFonts] = useState<string[]>([]);
+
+const loadSystemFonts = async () => {
+    const fontsDir = `${localStorage.getItem("freecut_settings_folder")}/fonts`;
+
+    console.log('fontsdir ',fontsDir)
+
+
+    try {
+        const fontPaths = await invoke<string[]>('list_fonts', { fontsPath: fontsDir });
+        setAvailableFonts(fontPaths);
+
+        console.log('fontPaths', fontPaths)
+
+        // Criar @font-face dinamicsoft
+        fontPaths.forEach(path => {
+            const fontName = path.split(/[\\/]/).pop()?.split('.')[0] || "Unknown";
+            const fontUrl = convertFileSrc(path);
+            
+            const fontFace = new FontFace(fontName, `url(${fontUrl})`);
+            fontFace.load().then((loadedFace) => {
+                document.fonts.add(loadedFace);
+            }).catch(e => console.error("Erro ao carregar fonte:", fontName, e));
+        });
+    } catch (e) { console.error(e); }
+};
+
+
+//END OF LOAD FONTS
+
+
+
 
 
 const transferClipsToNewTrackZero = (targetTrackId: number) => {
@@ -2906,6 +2957,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
         lastModified: Date.now()
       };
 
+      console.log('saveproject', projectData)
       
 
       
@@ -3540,26 +3592,36 @@ const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) =>
     const isVideo = videoExtensions.includes(extension);
 
     if (!isImage && !isAudio && !isVideo) {
-      showNotify("Invalid file type: Only video, audio, and images are allowed", "error");
-      return;
+
+      const type = clips.find( c => c.name == assetName)?.type || null
+
+      if(!type)
+      {
+        showNotify("Invalid file type: Only video, audio, text, effects and images are allowed", "error");
+        return
+      }
+
+
+
+    return type;
     }
 
     // 4. Assign the correct media type
-    let type: 'video' | 'audio' | 'image' = 'video';
+    let type: 'video' | 'audio' | 'image' | 'text' = 'video';
     if (isImage) type = 'image';
     if (isAudio) type = 'audio';
 
 
-    const finalType = typeTrack 
-    ? (type === 'audio' ? 'audio' : 'video') 
-    : type;
+    if(typeTrack && (type == 'image'))
+      return 'video'
 
-    return finalType
+
 
 }
 
 
-const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginmoment: number|null = null, originalduration: number = 10) => {
+const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginmoment: number|null = null, originalduration: number = 10, 
+  typeOriginal: string | null = null, dragData: JSON | null = null) => {
     
   
   var meta;
@@ -3578,7 +3640,8 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
     meta = {duration: 10}
   }
 
-  const type = knowTypeByAssetName(assetName, true);
+  const type = typeOriginal ? typeOriginal : knowTypeByAssetName(assetName, true);
+
 
   const dimensions = assets.find( a => a.name === assetName)?.dimensions || null
 
@@ -3593,7 +3656,8 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
 
           const updatedTracks = [...prev, { 
             id: newTrackId, 
-            type: type as 'video' | 'audio' | 'effects' 
+            type: type as 'video' | 'audio' | 'effects' | 'text',
+            
           }];
 
           const deleteClip = clips.find(c => c.id === deleteClipId);
@@ -3618,7 +3682,12 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
             maxduration: duration,
             beginmoment: beginmoment ? beginmoment : deleteClip ? deleteClip.beginmoment : 0,
             dimensions: dimensions,
-            scale: 1
+            scale: 1,
+            type: type,
+            text: type === 'text' ? 'Text' : null,
+            font: type === 'text' ? (dragData?.font || "SofiaRoughBlackInline") : null,
+            font_size: type === 'text' ? 14 : null,
+            font_shine: type === 'text' ? { size: 0, intensity: 0, color: null } : null
           };
 
 
@@ -4147,12 +4216,13 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
 
   const handleFinishSetup = async () => {
   if (rootPath && projectName) {
+
     try {
-      // 1. Chamamos a função Rust enviando o path base, o nome e o objeto de config
+      
       const finalPath = await invoke<string>('create_project_setup', { 
         rootPath, 
         projectName,
-        config: projectConfig // O estado que você já está atualizando no onChange
+        config: projectConfig 
       });
 
       
@@ -4178,9 +4248,13 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
 
 const openProject = async (path: string) => {
 
+
   console.log('project path', path)
-  //localStorage.setItem("current_project_path", path);
-  setCurrentProjectPath(path)
+  setCurrentProjectPath(path);
+  
+  setClips([]);
+  setAssets([]);
+  setTracks([]);
   
   try
   {
@@ -4192,12 +4266,14 @@ const openProject = async (path: string) => {
     console.log('config', config)
     
     const rawData = await invoke('load_latest_project', { projectPath: path });
-    var parsed = JSON.parse(rawData as string);
+    var parsed = JSON.parse(rawData as string) || JSON.parse('{}');
     //setProjectName(parsed.projectName)
 
 
 
     // Update states first
+    console.log('clips and assets', parsed.clips, parsed.assets)
+
     setClips(parsed.clips || []);
     setAssets(parsed.assets || []);
     setTracks(parsed.tracks || []);
@@ -4208,6 +4284,7 @@ const openProject = async (path: string) => {
     // Now allow saving
     setIsProjectLoaded(true); 
     setIsSetupOpen(false);
+    loadSystemFonts()
   } catch (err) {
     console.log("No previous project file found, starting fresh.");
     setIsProjectLoaded(true); // Allow saving for new projects too
@@ -4233,6 +4310,39 @@ const openProject = async (path: string) => {
       setIsDownloading(false);
     }
   };
+
+
+  const handleDragStartText = (
+  e: React.DragEvent, 
+  fontName: string, 
+  fontPath: string
+) => {
+  // 1. Definimos o tipo de dado como 'text' para o handleDrop identificar
+  const dragData = {
+    type: 'text',
+    font: fontName,
+    path: fontPath,
+    isTimelineClip: false // Como vem do sidebar, sempre será falso aqui
+  };
+
+  // 2. Armazenamos o objeto completo em formato JSON para facilitar o parsing no drop
+  e.dataTransfer.setData("application/json", JSON.stringify(dragData));
+
+  // 3. Mantemos compatibilidade com os campos individuais que sua lógica original usa
+  e.dataTransfer.setData("assetName", fontName);
+  e.dataTransfer.setData("fontPath", fontPath); // Dado específico da fonte
+  e.dataTransfer.setData("isTimelineClip", "false");
+  
+  // 4. Offset de clique (para fontes vindo do sidebar, o padrão é 0)
+  e.dataTransfer.setData("clickOffset", "0");
+
+  // 5. Feedback visual do arrasto (opcional)
+  // Define o efeito de cópia ao arrastar do menu para a timeline
+  e.dataTransfer.effectAllowed = "copy";
+
+  // Log para debug (opcional)
+  console.log("Dragging Font:", fontName);
+};
 
   const handleDragStart = (
   e: React.DragEvent, 
@@ -4372,8 +4482,148 @@ const isSpaceOccupied = (trackId: number, start: number, duration: number, exclu
     });
   };
 
- 
+
+
 const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const targetTrack = tracks.find(t => t.id === trackId);
+  if (targetTrack?.lock === true) return;
+
+  const isTimelineClip = e.dataTransfer.getData("isTimelineClip") === "true";
+  const anchorStart = parseFloat(e.dataTransfer.getData("anchorStart") || "0");
+  const clickOffset = parseFloat(e.dataTransfer.getData("clickOffset") || "0");
+  
+  const rect = e.currentTarget.getBoundingClientRect();
+  const mouseTime = (e.clientX - rect.left) / pixelsPerSecond;
+  const rawDropTime = mouseTime - clickOffset; 
+  const dropTime = getSnappedTime(rawDropTime, isTimelineClip ? deleteClipId : null, trackId);
+
+  // Parse JSON data (used for subclips or fonts from sidebar)
+  const jsonData = e.dataTransfer.getData("application/json");
+  const dragData = jsonData ? JSON.parse(jsonData) : null;
+
+
+
+  saveHistory(clips, assets, tracks);
+
+  // --- CASE 1: DROP FROM SIDEBAR (New Assets or Fonts) ---
+  if (!isTimelineClip) {
+    const assetName = e.dataTransfer.getData("assetName");
+    const fontPath = e.dataTransfer.getData("fontPath"); // From handleDragStartText
+    
+    // Determine type: check dragData first, then asset name
+    alert('dD: '+ dragData.type)
+    const whatType = dragData?.type === 'text' ? 'text' : knowTypeByAssetName(assetName, true);
+
+    alert('whatType: '+ whatType)
+    
+    const assetNow = assets.find(a => a.name === assetName);
+    
+    // Setup durations: Text is effectively infinite, Media follows asset duration
+    const defaultDuration = whatType === 'text' ? 5 : (assetNow ? Math.min(assetNow.duration, 10) : 5);
+    const totalMaxDuration = whatType === 'text' ? 3600 : (assetNow ? assetNow.duration : 10);
+
+    const isBusy = isSpaceOccupied(trackId, dropTime, defaultDuration, null);
+    const isWrongType = targetTrack?.type !== whatType;
+
+    if (!isBusy && !isWrongType) {
+
+     const newClip: Clip = {
+        id: crypto.randomUUID(),
+        name: whatType === 'text' ? (dragData?.font || "New Text") : assetName,
+        start: dropTime,
+        duration: dragData?.duration || defaultDuration,
+        originalduration: dragData?.duration || defaultDuration,
+        beginmoment: dragData?.beginmoment || 0,
+        color: getRandomColor(),
+        trackId: trackId,
+        maxduration: totalMaxDuration,
+        dimensions: assetNow?.dimensions || null,
+        scale: 1,
+        type: whatType,
+        text: whatType === 'text' ? 'Text' : null,
+        font: whatType === 'text' ? (dragData?.font || "SofiaRoughBlackInline") : null,
+        font_size: whatType === 'text' ? 14 : null,
+        font_shine: whatType === 'text' ? { size: 0, intensity: 0, color: null } : null
+      };
+
+      setClips(prev => [...prev, newClip]);
+    } else {
+
+      // Create new track if occupied or type mismatch
+      if (whatType === 'text') {
+          // Special case for creating text on new track if needed
+          createClipOnNewTrack(dragData?.font || "Text", dropTime, 0, 10, 'text', dragData);
+
+      } else {
+          createClipOnNewTrack(assetName, dropTime, dragData?.beginmoment || 0);
+      }
+    }
+  } 
+  
+  // --- CASE 2: MOVING EXISTING CLIPS ON TIMELINE ---
+  else if (isTimelineClip && selectedClipIds.length > 0) {
+    const timeOffset = dropTime - anchorStart;
+    const anchorClip = clips.find(c => c.id === deleteClipId);
+    const trackOffset = anchorClip ? trackId - anchorClip.trackId : 0;
+
+    const otherClips = clips.filter(c => !selectedClipIds.includes(c.id));
+    const tracksIds = tracks.map(t => t.id);
+    let maxTrackId = Math.max(...tracksIds, trackId);
+    
+    const finalMovedClips = clips
+      .filter(c => selectedClipIds.includes(c.id))
+      .map(clip => {
+        let targetTrackId = Math.max(0, clip.trackId + trackOffset);
+        const targetStart = Math.max(0, clip.start + timeOffset);
+        const currentTrack = tracks.find(t => t.id === targetTrackId);
+        
+        const clipType = clip.type || knowTypeByAssetName(clip.name, true);
+
+        // Collision or Type Mismatch check
+        if (isSpaceOccupied(targetTrackId, targetStart, clip.duration, clip.id) || 
+            (currentTrack && currentTrack.type !== clipType)) {
+          maxTrackId++;
+          targetTrackId = maxTrackId;
+        }
+
+        return {
+          ...clip,
+          start: targetStart,
+          trackId: targetTrackId,
+          color: clip.trackId === targetTrackId ? clip.color : getRandomColor()
+        };
+      });
+
+    setClips([...otherClips, ...finalMovedClips]);
+
+    // Handle dynamic track creation for moved clips
+    const highestId = Math.max(...finalMovedClips.map(c => c.trackId));
+    if (highestId > Math.max(...tracksIds)) {
+      const newTracksCreated = finalMovedClips
+        .filter(fc => !tracksIds.includes(fc.trackId))
+        .map(fc => ({
+          id: fc.trackId,
+          type: (fc.type || knowTypeByAssetName(fc.name, true)) as any,
+          lock: false,
+          visible: true
+        }));
+
+      setTracks(prev => {
+        const uniqueTracks = [...prev, ...newTracksCreated].filter((track, index, self) =>
+          index === self.findIndex((t) => t.id === track.id)
+        );
+        return uniqueTracks.sort((a, b) => a.id - b.id);
+      });
+    }
+  }
+
+  setDeleteClipId(null);
+};
+ 
+const handleDropOnTimeline_old = (e: React.DragEvent, trackId: number) => {
   e.preventDefault();
   e.stopPropagation();
 
@@ -4422,6 +4672,8 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     
       const droppedClip = JSON.parse(data);
 
+      console.log('dropped clip', droppedClip)
+
       
       // 1. Try to find the corresponding asset.
       const assetNow = assets.find(a => a.name === droppedClip.name);
@@ -4435,7 +4687,8 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       const totalMaxDuration = assetNow ? assetNow.duration : 10;
 
       const isBusy = (isSpaceOccupied(trackId, dropTime, droppedClip.duration, null))
-      const isNotType = tracks.find( t => t.id === trackId)?.type !== knowTypeByAssetName(droppedClip.name ,true)
+      const whatType = knowTypeByAssetName(droppedClip.name ,true);
+      const isNotType = tracks.find( t => t.id === trackId)?.type !== whatType
       
       
       if(!isBusy && !isNotType)
@@ -4451,7 +4704,12 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
             maxduration: totalMaxDuration,
             beginmoment: droppedClip.beginmoment,
             dimensions: assetNow?.dimensions ? assetNow?.dimensions : null,
-            scale: 1
+            scale: 1,
+            type: whatType,
+            font: (whatType == 'text' ) ? 'SofiaRoughBlackInline' :  null,
+            font_size: (whatType == 'text' ) ? 14 :  null,
+            font_shine: null
+
           };
 
           setClips(prev => [...prev, newClip]);
@@ -5733,6 +5991,9 @@ return (
             handleDragStart={handleDragStart}
             handleRenameAsset={handleRenameAsset}
             formatTime={formatTime}
+            availableFonts = {availableFonts}
+            loadSystemFonts = {loadSystemFonts}
+            handleDragStartText = {handleDragStartText}
           />
 
 <div id="twopreview" className="flex-1 flex overflow-hidden min-h-0 bg-[#050505]">
@@ -6218,6 +6479,10 @@ return (
     const pA = priority(a.type);
     const pB = priority(b.type);
 
+    //console.log('clips: ', clips)
+
+
+
     if (pA !== pB) {
       return pA - pB;
     }
@@ -6233,6 +6498,8 @@ return (
             {track.type === 'audio' && <Music size={14} />}
             {track.type === 'video' && <Play size={14} fill="currentColor" />}
             {track.type === 'effects' && <Sparkles size={14} />}
+            {track.type === 'text' && <Type size={14} />}
+
           </div>
           
           <div className="flex flex-col min-w-0">
@@ -6261,12 +6528,12 @@ return (
               }`}/>
 
             {
-             (index !== 0 && track.type == 'video') && <ArrowBigUpDash size={14} onClick={()=> transferClipsToNewTrackZero(track.id)}
+             (index !== 0 && track.type != 'audio') && <ArrowBigUpDash size={14} onClick={()=> transferClipsToNewTrackZero(track.id)}
              className={"cursor-pointer transition-colors duration-200"}/> 
             }
 
             {
-             (index !== 0 && index !==1 && track.type == 'video') && <ArrowUp size={14} onClick={()=> moveTrackDownAndShiftOthers(track.id)}
+             (index !== 0 && index !==1 && track.type != 'audio') && <ArrowUp size={14} onClick={()=> moveTrackDownAndShiftOthers(track.id)}
              className={"cursor-pointer transition-colors duration-200"}/> 
             }
 
@@ -6307,7 +6574,11 @@ return (
             const cacheKey = `${clip.id}-${clip.beginmoment}-${clip.duration}`;
             const thumbs = timelineThumbs[cacheKey];
             const assetTarget = assets.find( a => a.name === clip.name) || null
-            if(!assetTarget) return
+            if(!assetTarget && !clip.type) return
+
+            //alert(clip.name + ' ' + clip.type)
+
+            
             const isVideo = (assetTarget?.type  === 'video')
             
             let margintitle = pixelsPerSecond > 30 ? -15 : -15
@@ -6315,7 +6586,7 @@ return (
 
 
             margintitle = pixelsPerSecond > 50 ? 30 : margintitle
-            const isAudioOnly = assetTarget.type === 'audio';
+            const isAudioOnly = assetTarget?.type === 'audio';
             const currentFadeIn = isAudioOnly ? (clip.fadeinAudio || 0) : (clip.fadein || 0);
             const currentFadeOut = isAudioOnly ? (clip.fadeoutAudio || 0) : (clip.fadeout || 0);
 
@@ -6682,9 +6953,11 @@ return (
               <div className="relative flex items-center justify-start w-full h-full px-4 overflow-hidden pointer-events-none">
                 <p 
                   className="text-[9px] font-black text-white uppercase italic leading-none drop-shadow-lg truncate max-w-[80%]"
-                  style={{ marginLeft: assetTarget?.type === 'audio' ? '0' : '64px' }} // Ajusta se houver thumbnail
+                  style={{ marginLeft: assetTarget?.type !== 'video' ? '0' : '64px' }} // Ajusta se houver thumbnail
                 >
-                  {clip.name}
+                  { 
+                    clip.type === 'text' ? clip.text : clip.name
+                  }
                 </p>
               </div>
 

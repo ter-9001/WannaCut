@@ -507,6 +507,27 @@ fn save_project_data(project_path: String, data: String, timestamp: u64) -> Resu
     Ok(())
 }
 
+
+#[tauri::command]
+fn list_fonts(fonts_path: String) -> Result<Vec<String>, String> {
+    let mut fonts = Vec::new();
+    let path = Path::new(&fonts_path);
+
+    if !path.exists() { return Ok(fonts); }
+
+    let entries = fs::read_dir(path).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if let Some(ext) = p.extension() {
+            let ext_str = ext.to_string_lossy().to_lowercase();
+            if ext_str == "ttf" || ext_str == "otf" {
+                fonts.push(p.to_string_lossy().into_owned());
+            }
+        }
+    }
+    Ok(fonts)
+}
+
 // Function to load the last saved state of the project
 #[tauri::command]
 fn load_latest_project(project_path: String) -> Result<String, String> {
@@ -1010,7 +1031,8 @@ fn main() {
             save_settings_file,
             init_settings_structure,
             init_workspace_structure,
-            transfer_folder_content
+            transfer_folder_content,
+            list_fonts
            
         ])
         .run(tauri::generate_context!())

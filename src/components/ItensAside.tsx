@@ -29,6 +29,16 @@ interface ItensAsideProps {
   handleDragStart: (e: any, ...args: any[]) => void;
   handleRenameAsset: (oldName: string, newName: string) => void;
   formatTime: (seconds: number) => string;
+  availableFonts: string [];
+  loadSystemFonts: () => void;
+  handleDragStartText: (
+  e: React.DragEvent, 
+  fontName: string, 
+  fontPath: string
+  ) => void;
+
+
+
 }
 
 export const ItensAside = ({
@@ -46,7 +56,11 @@ export const ItensAside = ({
   setCurrentTime2,
   handleDragStart,
   handleRenameAsset,
-  formatTime
+  formatTime,
+  availableFonts,
+  loadSystemFonts,
+  handleDragStartText
+  
 }: ItensAsideProps) => {
   const [activeTab, setActiveTab] = useState('Media');
 
@@ -103,7 +117,7 @@ export const ItensAside = ({
 
       {/* --- CONTENT AREA --- */}
       <div className="flex-1 flex flex-col min-w-0">
-        {activeTab === 'Media' ? (
+        {activeTab === 'Media' && (
           <>
             {/* Header: Import & Search */}
             <aside
@@ -245,8 +259,89 @@ export const ItensAside = ({
             </aside>
 
           </>
-        ) : (
-          /* Placeholder para as outras abas */
+        )}
+        
+             
+        {
+        
+        (activeTab === 'Text' && availableFonts.length > 0) && (
+          <div className="flex-1 flex flex-col p-4 space-y-4 overflow-y-auto custom-scrollbar">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                Typography Library
+              </h3>
+              <button 
+                onClick={() => {/* Abrir pasta de fontes no SO */}}
+                className="p-1 hover:bg-white/5 rounded text-zinc-500 transition-colors"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2">
+              {availableFonts.map((fontPath) => {
+                const fontName = fontPath.split(/[\\/]/).pop()?.split('.')[0] || "Font";
+                return (
+                  <motion.div
+                    key={fontPath}
+                    draggable
+                    onDragStart={(e) => handleDragStartText(e,fontName, fontPath)}
+                    className="group relative bg-white/2 border border-white/5 p-3 rounded-lg hover:border-cyan-500/30 hover:bg-white/5 cursor-grab active:cursor-grabbing transition-all"
+                  >
+                    {/* O SEGREDO: Aplicar a fonte dinamicamente aqui */}
+                    <p 
+                      style={{ fontFamily: fontName }} 
+                      className="text-lg text-white truncate"
+                    >
+                      {fontName}
+                    </p>
+                    
+                    <div className="flex justify-between items-center mt-2">
+                      <span className="text-[8px] text-zinc-600 uppercase font-bold tracking-tighter">
+                          {fontPath.endsWith('ttf') ? 'TrueType' : 'OpenType'}
+                      </span>
+                      <Type size={10} className="text-zinc-700 group-hover:text-cyan-500 transition-colors" />
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        
+        
+        {
+        
+        
+        (activeTab ==='Text' && availableFonts.length == 0) &&
+        (
+
+          <div className="flex-1 flex flex-col items-center justify-center p-10 text-center space-y-4">
+            <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center text-zinc-700">
+               {menuOptions.find(o => o.id === activeTab)?.icon}
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-zinc-300 uppercase tracking-tighter">{activeTab} No Fonts </h3>
+              <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-medium"> Download and put in subfolder fonts in freecut_settings (check  the configurations) </p>
+            </div>
+          </div>
+
+        )
+        
+        }
+        
+        
+        
+        
+        
+        
+        
+        {
+
+          (activeTab != 'Text' && activeTab != 'Media') &&
+          
+        (
+          /* Placeholder for others tabs */
           <div className="flex-1 flex flex-col items-center justify-center p-10 text-center space-y-4">
             <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center text-zinc-700">
                {menuOptions.find(o => o.id === activeTab)?.icon}
@@ -256,7 +351,8 @@ export const ItensAside = ({
               <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-medium">Under construction in the engine</p>
             </div>
           </div>
-        )}
+        )
+        }
       </div>
     </aside>
   );
