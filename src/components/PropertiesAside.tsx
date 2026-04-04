@@ -33,7 +33,11 @@ interface PropertiesAsideProps {
   currentTimeRef: React.MutableRefObject<number>;
   setClips: React.Dispatch<React.SetStateAction<any[]>>;
   updateKeyframes: (clip: any, property: string, value: any) => void;
-  getInterpolatedValueWithFades: (time: number, clip: any, prop: string) => any;
+  getInterpolatedValueWithFades: (
+  timeFull: number, 
+  clip: any, 
+  type: 'opacity' | 'volume' | 'speed' | 'zoom' | 'position' | 'rotation3d'
+  ) => any 
   knowTypeByAssetName: (name: string) => string;
   COLOR_MAP: Record<string, string>;
 }
@@ -50,6 +54,8 @@ export const PropertiesAside = ({
   knowTypeByAssetName,
   COLOR_MAP
 }: PropertiesAsideProps) => {
+
+
   
   if (!selectedClipIds || selectedClipIds.length !== 1) return null;
 
@@ -61,10 +67,10 @@ export const PropertiesAside = ({
   const selectedClip = {
     ...foundClip,
     path: assetnow?.path,
-    type: knowTypeByAssetName(foundClip.name)
+    type: foundClip.type ? foundClip.type : knowTypeByAssetName(foundClip.name)
   };
 
-  if (!selectedClip.path) return null;
+  if (!selectedClip.path && selectedClip.type != 'text') return null;
 
   const activeHex = COLOR_MAP[selectedClip.color] || '#4f46e5';
 
@@ -73,7 +79,7 @@ export const PropertiesAside = ({
   const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp'];
 
   // 2. Função auxiliar para verificar a extensão (ignora maiúsculas/minúsculas)
-  const hasExtension = (path, extensions) => 
+  const hasExtension = (path: string, extensions: string []) => 
     path ? extensions.some(ext => path.toLowerCase().endsWith(ext)) : false;
 
   // 3. Atribuição das constantes
@@ -96,8 +102,9 @@ export const PropertiesAside = ({
   const speedKeyframeNow = checkKeyframeNow('speed');
   const zoomKeyframeNow = checkKeyframeNow('zoom');
 
-  const currentPos = getInterpolatedValueWithFades(currentTime, selectedClip, 'position');
-  const rotation3d = getInterpolatedValueWithFades(currentTime, selectedClip, 'rotation3d');
+  const currentPos = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'position');
+  const rotation3d = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'rotation3d');
+
 
   return (
     
@@ -217,7 +224,7 @@ export const PropertiesAside = ({
 
 
       {/* VOLUME */}
-      {(isAudio || isVideo ) && (
+      {(!isImage && !isText  ) && (
         <PropertyRow 
           label={
             <div className="flex justify-between items-center w-full pr-2">
@@ -275,7 +282,8 @@ export const PropertiesAside = ({
       )}
       
       {/* SPEED */}
-      <PropertyRow 
+      {
+        ( !isText && !isImage ) && (<PropertyRow 
         label={
           <div className="flex justify-between items-center w-full pr-2">
             <span>Speed</span>
@@ -300,34 +308,39 @@ export const PropertiesAside = ({
           }}
           value={getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'speed')}
         />
-      </PropertyRow>
+      </PropertyRow>)
+      }
 
+          {/* ROTATION */}
           {(isVideo || isText || isImage) && (
             <div className="grid grid-cols-2 gap-2 mt-2">
               <PropertyRow label="Rotation" activeColor={activeHex}>
                 <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none"
                 min="0"
                 max="360"
-                defaultValue= {Math.round(rotation3d.x)}
+                value = {Math.round(rotation3d.rot)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     updateKeyframes(selectedClip, 'rotation3d', { rot: parseFloat(e.currentTarget.value) });
                   }
                   }}
                 onBlur={(e) => updateKeyframes(selectedClip, 'rotation3d', { rot: parseFloat(e.currentTarget.value) })}
+                //defaultValue={getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'rotation3d').rot}
                 />
               </PropertyRow>
               <PropertyRow label="3D Rot" activeColor={activeHex}>
                 <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none"
                 min="0"
                 max="360"
-                defaultValue= {Math.round(rotation3d.y)}
+                value = {Math.round(rotation3d.rot3d)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     updateKeyframes(selectedClip, 'rotation3d', { rot3d: parseFloat(e.currentTarget.value) });
                   }
                   }}
                 onBlur={(e) => updateKeyframes(selectedClip, 'rotation3d', { rot3d: parseFloat(e.currentTarget.value) })}
+
+
                 />
               </PropertyRow>
             </div>
