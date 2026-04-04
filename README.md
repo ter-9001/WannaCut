@@ -118,7 +118,7 @@ pyinstaller --onefile \
   --collect-all moviepy \
   --hidden-import moviepy.video.fx.all \
   --hidden-import moviepy.audio.fx.all \
-  exporter.py
+  exporter2.py
 
 
 #move the new binary file from src-tauri/bin/dist for src-tauri/bin/ and rename with the target triple 
