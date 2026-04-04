@@ -154,9 +154,9 @@ interface Clip {
 };
 
   type?: string | null;
-  text?:string | null;
   font?: string | null;
   font_size?: number | null ; // px
+  font_color?: string | null;
   font_shine?: Font_Shine | null;
   
 
@@ -874,11 +874,11 @@ const startExport = async () => {
     return {
     ...c ,path: `${currentProjectPath}/videos/${c.name}` ,
     trackId: c.trackId.toString(),
-     type: knowTypeByAssetName(c.name),
-      mute: c.mute ?? false,
-      beginmoment: sanitizeNumber(c.beginmoment),
-  duration: sanitizeNumber(c.duration),
-  start: sanitizeNumber(c.start)
+    type: c.type ? c.type : knowTypeByAssetName(c.name),
+    mute: c.mute ?? false,
+    beginmoment: sanitizeNumber(c.beginmoment),
+    duration: sanitizeNumber(c.duration),
+    start: sanitizeNumber(c.start)
     }})
 
 
@@ -918,7 +918,7 @@ const updatePreview = async (currentTime: number) => {
   const currentClips = clips.filter(clip => 
     currentTime >= clip.start  && 
     currentTime <= (clip.start  + clip.duration) && 
-    knowTypeByAssetName(clip.name, true) === 'video'
+    knowTypeByAssetName(clip.name, true) !== 'audio'
   );
 
   if (currentClips.length == 0)
@@ -946,7 +946,7 @@ const updatePreview = async (currentTime: number) => {
   //const winner = sortedClips[0] || null;
   topClips.current = sortedClips;
 
-  console.log('winners: ',sortedClips)
+  //console.log('winners: ',sortedClips)
 
   
 
@@ -1330,7 +1330,89 @@ const getInterpolatedValue = (time: number, keyframes: Keyframe[]): number => {
   return 0.5;
 };
 
+
 const getInterpolatedValueWithFades = (
+  timeFull: number, 
+  clip: any, 
+  type: 'opacity' | 'volume' | 'speed' | 'zoom' | 'position' | 'rotation3d'
+): any => {
+  
+  // 1. Fallbacks com tipos numéricos garantidos
+  const getDefaultValue = () => {
+    switch (type) {
+      case 'volume': return 1;
+      case 'zoom': return 1.0;
+      case 'position': return { x: 0, y: 0 };
+      case 'rotation3d': return { rot: 0, rot3d: 0 };
+      case 'speed': return 1.0;
+      case 'opacity': return 1.0;
+      default: return 0;
+    }
+  };
+
+  const time = timeFull - clip.start;
+  const kfArray = clip.keyframes?.[type];
+  
+  if (!kfArray || !Array.isArray(kfArray) || kfArray.length === 0) {
+    return applyFades(getDefaultValue(), time, clip, type);
+  }
+
+  const sorted = [...kfArray].sort((a, b) => a.time - b.time);
+  let baseValue: any;
+
+  // 2. Lógica de Fronteiras
+  if (time <= sorted[0].time) {
+    baseValue = sorted[0].value;
+  } else if (time >= sorted[sorted.length - 1].time) {
+    baseValue = sorted[sorted.length - 1].value;
+  } else {
+    // 3. Interpolação
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const startKf = sorted[i];
+      const endKf = sorted[i + 1];
+
+      if (time >= startKf.time && time <= endKf.time) {
+        const rangeTime = endKf.time - startKf.time;
+        const progress = rangeTime === 0 ? 0 : (time - startKf.time) / rangeTime;
+
+        if (type === 'position') {
+          const start = startKf.value;
+          const end = endKf.value;
+          baseValue = {
+            x: Number(start.x) + progress * (Number(end.x) - Number(start.x)),
+            y: Number(start.y) + progress * (Number(end.y) - Number(start.y))
+          };
+        } 
+        else if (type === 'rotation3d') {
+          const start = startKf.value;
+          const end = endKf.value;
+          baseValue = {
+            rot: Number(start.rot || 0) + progress * (Number(end.rot || 0) - Number(start.rot || 0)),
+            rot3d: Number(start.rot3d || 0) + progress * (Number(end.rot3d || 0) - Number(start.rot3d || 0))
+          };
+        } 
+        else {
+          // O fix principal para o erro "1-0.313..." está aqui: usar Number() em ambos os lados
+          const startVal = Number(startKf.value);
+          const endVal = Number(endKf.value);
+          baseValue = startVal + progress * (endVal - startVal);
+        }
+        break;
+      }
+    }
+  }
+
+  // Debug solicitado
+  if (type === 'opacity') {
+    console.log('basevalue', baseValue);
+  }
+
+  return applyFades(baseValue, time, clip, type);
+};
+
+
+
+const getInterpolatedValueWithFades_old = (
   timeFull: number, 
   clip: any, 
   type: 'opacity' | 'volume' | 'speed' | 'zoom' | 'position' | 'rotation3d'
@@ -1393,6 +1475,8 @@ const getInterpolatedValueWithFades = (
 
   return applyFades(baseValue, time, clip, type);
 };
+
+
 
 /**
  * Função auxiliar isolada para aplicar os Fades de entrada e saída
@@ -1600,9 +1684,14 @@ useEffect(() => {
 }, [canvasRef.current, projectConfig.width, projectConfig.height]); // Adicionado canvasRef.current aqui
 
 
+
+
+
+
 const fetchFramesFromRust = async (time: number) => {
   // Garante que topClips existe
   if (!topClips.current) return [];
+
 
   const activeClips = topClips.current.reverse()
 
@@ -1612,6 +1701,10 @@ const fetchFramesFromRust = async (time: number) => {
     const timelineRelativeTime = time - clip.start;
     const clipTimeMs = (timelineRelativeTime + (clip.beginmoment || 0)) * 1000;
     const path = `${currentProjectPath}/videos/${clip.name}`;
+
+     if (clip.type === 'text') {
+      return { id: clip.id, img: null, clip };
+    }
 
     try {
       const frameBase64 = await invoke('get_video_frame', { path, timeMs: clipTimeMs }) as string;
@@ -1628,13 +1721,10 @@ const fetchFramesFromRust = async (time: number) => {
 };
 
 
-
-const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement, clip: any }[], time: number) => {
+const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement | null, clip: any }[], time: number) => {
   const scene = sceneRef.current;
   if (!scene || !rendererRef.current) return;
 
-  // 0. CONFIGURAÇÕES DO PROJETO (Pegue do seu estado global/props)
-  // Supondo que projectConfig venha do seu contexto de projeto
   const projW = projectConfig.width; 
   const projH = projectConfig.height;
   const projectAspect = projW / projH;
@@ -1676,118 +1766,143 @@ const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement, clip:
       mesh = group.children[0] as THREE.Mesh;
     }
 
-    // --- TEXTURA ---
-    const texture = new THREE.Texture(img);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.needsUpdate = true;
+    // --- LÓGICA DE TEXTURA (Mídia vs Texto) ---
     const mat = mesh.material as THREE.MeshBasicMaterial;
     if (mat.map) mat.map.dispose();
-    mat.map = texture;
 
-    // --- INTERPOLAÇÃO DE VALORES ---
+    if (clip.type === 'text') {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        // High-res canvas for text
+        canvas.width = 1024; 
+        canvas.height = 256;
+        
+        ctx.fillStyle = 'white'; 
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        // Font & Size
+        const fontSize = clip.font_size || 14;
+        ctx.font = `${fontSize * 4}px "${clip.font}"`; 
+        
+        // Font Shine (Dynamic Glow)
+        if (clip.font_shine && clip.font_shine.intensity && clip.font_shine.intensity > 0) {
+          ctx.shadowColor = clip.font_shine.color || 'white';
+          ctx.shadowBlur = clip.font_shine.size || 10;
+        }
+
+        ctx.fillText(clip.name, canvas.width / 2, canvas.height / 2);
+        
+        const textTexture = new THREE.CanvasTexture(canvas);
+        textTexture.colorSpace = THREE.SRGBColorSpace;
+        mat.map = textTexture;
+      }
+    } else if (img) {
+      const texture = new THREE.Texture(img);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.needsUpdate = true;
+      mat.map = texture;
+    }
+
+    // --- INTERPOLAÇÃO MANUAL DE ROTATION3D (Fixing the "Sudden Jump") ---
+    const rotationKfs = clip.keyframes?.rotation3d || [];
+    let rotationRaw = { rot: 0, rot3d: 0 };
+
+    if (rotationKfs.length > 0) {
+      const sortedKfs = [...rotationKfs].sort((a, b) => a.time - b.time);
+      const nextIdx = sortedKfs.findIndex(kf => kf.time > time);
+
+      if (nextIdx === -1) {
+        rotationRaw = sortedKfs[sortedKfs.length - 1].value;
+      } else if (nextIdx === 0) {
+        rotationRaw = sortedKfs[0].value;
+      } else {
+        const prev = sortedKfs[nextIdx - 1];
+        const next = sortedKfs[nextIdx];
+        const t = (time - prev.time) / (next.time - prev.time);
+        
+        rotationRaw = {
+          rot: prev.value.rot + (next.value.rot - prev.value.rot) * t,
+          rot3d: prev.value.rot3d + (next.value.rot3d - prev.value.rot3d) * t
+        };
+      }
+    } else {
+      rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d') || { rot: 0, rot3d: 0 };
+    }
+
+    // --- OUTRAS INTERPOLAÇÕES ---
     const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
-    const rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d') || { rot: 0, rot3d: 0 };
-    
-    // Verificação de Keyframes para a "Trava" de Fullscreen
     const hasPositionKfs = clip.keyframes?.position && Object.keys(clip.keyframes.position).length > 0;
     const hasZoomKfs = clip.keyframes?.zoom && Object.keys(clip.keyframes.zoom).length > 0;
 
-    // --- LÓGICA DE DIMENSÃO INTELIGENTE (AUTO-FILL) ---
-    const clipW = clip.dimensions?.x || img.width;
-    const clipH = clip.dimensions?.y || img.height;
+    // --- DIMENSIONS & POSITIONING ---
+    const clipW = clip.type === 'text' ? projW : (clip.dimensions?.x || (img ? img.width : projW));
+    const clipH = clip.type === 'text' ? projH / 4 : (clip.dimensions?.y || (img ? img.height : projH));
     const clipAspect = clipW / clipH;
 
-    // Diferença mínima para considerar "mesmo aspect ratio" (float precision)
-    const isSameAspect = Math.abs(clipAspect - projectAspect) < 0.01;
+    const isSameAspect = clip.type === 'text' ? false : Math.abs(clipAspect - projectAspect) < 0.01;
 
-    let finalW: number;
-    let finalH: number;
-    let finalPosX: number;
-    let finalPosY: number;
+    let finalW: number, finalH: number, finalPosX: number, finalPosY: number;
 
     if (isSameAspect) {
-      // Se o Aspect é igual, a base de tamanho é o projeto inteiro
-      finalW = projW;
-      finalH = projH;
-
+      finalW = projW; finalH = projH;
       if (!hasPositionKfs && !hasZoomKfs) {
-        // Caso padrão: Sem chaves = Centralizado e Tela Cheia
-        finalPosX = 0; // No seu sistema de coordenadas, 0 é o centro se compensado corretamente
-        finalPosY = 0;
+        finalPosX = 0; finalPosY = 0;
       } else {
-        // Se houver chaves, pegamos os valores interpolados
         const zoomK = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
         const posK = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-        
-        finalW *= zoomK;
-        finalH *= zoomK;
-        finalPosX = posK.x;
-        finalPosY = posK.y;
+        finalW *= zoomK; finalH *= zoomK;
+        finalPosX = posK.x; finalPosY = posK.y;
       }
     } else {
-      // Comportamento normal para clips com aspect ratio diferente
       const zoomVal = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
       const posVal = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-      
       finalW = clipW * zoomVal;
       finalH = clipH * zoomVal;
-      finalPosX = posVal.x;
-      finalPosY = posVal.y;
+
+      const ajustText = clip.type === 'text' ? 1 : 0;
+      finalPosX = posVal.x - 20;
+      finalPosY = posVal.y - 120 + (ajustText * (projH / 2));
     }
 
-    // --- COMPENSAÇÃO DE ROTAÇÃO 3D (Ajuste de Centro) ---
-    let ajustcenter = clip.dimensions ? clip.dimensions.x / 5 : 0;
-    if (rotationRaw.rot3d === 0 || !rotationRaw) {
-        ajustcenter = 0;
-    } else if (!((0 <= rotationRaw.rot3d) && (rotationRaw.rot3d <= 90)) && 
-               !((-181 <= rotationRaw.rot3d) && (rotationRaw.rot3d <= -91))) {
-        ajustcenter = -1 * ajustcenter;
-    }
+    // --- FINAL TRANSFORMS ---
+    let ajustcenter = (clip.dimensions?.x || finalW) / 5;
+    if (rotationRaw.rot3d === 0 || !rotationRaw.rot3d) ajustcenter = 0;
+    else if (rotationRaw.rot3d < 0) ajustcenter *= -1;
 
-    // --- POSICIONAMENTO FINAL NO THREE.JS ---
-    // Se for Fullscreen centralizado (sem KFs), o pos.x costuma vir como 0 no Python, 
-    // então a conta (0 + W/2) centraliza o plano na cena.
-    group.position.set(
-      finalPosX + (finalW / 2) + ajustcenter, 
-      -(finalPosY + (finalH / 2)), 
-      index * 0.1 
-    );
-
+    group.position.set(finalPosX + (finalW / 2) + ajustcenter, -(finalPosY + (finalH / 2)), index * 0.1);
     group.rotation.z = THREE.MathUtils.degToRad(-(rotationRaw.rot ?? 0));
     mesh.rotation.y = THREE.MathUtils.degToRad(rotationRaw.rot3d ?? 0);
-    
     mesh.scale.set(finalW, finalH, 1);
 
-    // --- ESTILIZAÇÃO ---
+    // --- BLENDING & OPACITY ---
     mat.opacity = opacity;
     const mode = (clip.blendmode || 'normal').toLowerCase();
-    mat.blending = THREE.NormalBlending; // Default
+    mat.blending = THREE.NormalBlending;
 
-    switch (mode) {
-      case 'screen':
-        mat.blending = THREE.CustomBlending;
-        mat.blendSrc = THREE.OneFactor;
-        mat.blendDst = THREE.OneMinusSrcColorFactor;
-        break;
-      case 'add':
-        mat.blending = THREE.AdditiveBlending;
-        break;
-      case 'multiply':
-        mat.blending = THREE.MultiplyBlending;
-        break;
-      // Adicione outros conforme necessário
+    if (mode === 'screen') {
+      mat.blending = THREE.CustomBlending;
+      mat.blendSrc = THREE.OneFactor;
+      mat.blendDst = THREE.OneMinusSrcColorFactor;
+    } else if (mode === 'add') {
+      mat.blending = THREE.AdditiveBlending;
+    } else if (mode === 'multiply') {
+      mat.blending = THREE.MultiplyBlending;
     }
   });
 };
 
-
-
-
-
-
-const syncClipsToScene_old = (loadedData: { id: string, img: HTMLImageElement, clip: any }[], time: number) => {
+const syncClipsToScene_old = (loadedData: { id: string, img: HTMLImageElement | null, clip: Clip }[], time: number) => {
   const scene = sceneRef.current;
   if (!scene || !rendererRef.current) return;
+
+
+
+
+  const projW = projectConfig.width; 
+  const projH = projectConfig.height;
+  const projectAspect = projW / projH;
 
   const loadedIds = new Set(loadedData.map(d => d.id));
   
@@ -1810,25 +1925,15 @@ const syncClipsToScene_old = (loadedData: { id: string, img: HTMLImageElement, c
 
     if (!group) {
       group = new THREE.Group();
-      
-      // Criamos um plano 1x1. O segredo é a escala depois.
       const geometry = new THREE.PlaneGeometry(1, 1);
-      
-      // FORÇAR O PONTO ZERO NO CENTRO EXATO
       geometry.center(); 
-
       const material = new THREE.MeshBasicMaterial({ 
         transparent: true, 
         side: THREE.DoubleSide,
         depthWrite: false 
       });
-
       mesh = new THREE.Mesh(geometry, material);
-      
-      // Ordem YXZ: Primeiro rotaciona em Y (o 3D), depois X, depois Z (o 2D)
-      // Isso é o que evita o efeito de "dobradiça" ou distorção de eixo
       mesh.rotation.order = 'YXZ'; 
-      
       group.add(mesh);
       scene.add(group);
       groupsRef.current.set(id, group);
@@ -1836,119 +1941,119 @@ const syncClipsToScene_old = (loadedData: { id: string, img: HTMLImageElement, c
       mesh = group.children[0] as THREE.Mesh;
     }
 
-    // --- TEXTURA ---
-    const texture = new THREE.Texture(img);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.needsUpdate = true;
+    // --- LÓGICA DE TEXTURA (Mídia vs Texto) ---
     const mat = mesh.material as THREE.MeshBasicMaterial;
     if (mat.map) mat.map.dispose();
-    mat.map = texture;
 
-    // --- VALORES DO PYTHON ---
-    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
-    const zoom = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-    const pos = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-    const rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d');
-    
-    const rotation = {
-      rot: rotationRaw?.rot ?? 0,
-      rot3d: rotationRaw?.rot3d ?? 0
-    };
+    if (clip.type === 'text') {
+      // Gerar textura de texto via Canvas
+
+      console.log('type text detect');
 
 
-    let ajustcenter = clip.dimensions ? clip.dimensions.x/5 : 0;
-    
-    if(
-    ( !(0 <= rotationRaw.rot3d) && ( rotationRaw.rot3d <= 90)) || 
-    (     !(-181 <= rotationRaw.rot3d) && ( rotationRaw.rot3d <= -91)  ) 
-    )
-    {
-        ajustcenter = -1 * ajustcenter
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        // Ajuste de resolução do texto (multiplicador para não pixelar)
+        canvas.width = 1024; 
+        canvas.height = 256;
+        
+        ctx.fillStyle = 'white'; // Cor padrão do texto
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        // Aplica a fonte carregada do sistema
+        const fontSize = clip.font_size || 40;
+        ctx.font = `${fontSize * 4}px "${clip.font}"`; 
+        
+        // Efeito Shine (se configurado)
+        if (clip.font_shine && clip.font_shine.intensity && clip.font_shine.intensity > 0) {
+          ctx.shadowColor = clip.font_shine?.color || 'white';
+          ctx.shadowBlur = clip.font_shine?.size || 10;
+        }
+
+        ctx.fillText(clip.name, canvas.width / 2, canvas.height / 2);
+        
+        const textTexture = new THREE.CanvasTexture(canvas);
+        textTexture.colorSpace = THREE.SRGBColorSpace;
+        mat.map = textTexture;
+      }
+    } else if (img) {
+      // Textura normal de imagem/vídeo
+      const texture = new THREE.Texture(img);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.needsUpdate = true;
+      mat.map = texture;
     }
 
-  const isRotationZero = rotationRaw.rot3d === 0;
-  const hasNoRotation = !rotationRaw;
-  const hasNoPosition = !clip.keyframes?.position;
-
-  if (hasNoRotation) 
-    ajustcenter = 0;
-
-  if(isRotationZero) 
-    ajustcenter = 0;
-
-    console.log('ajust', ajustcenter)
-
-    console.log(
-      "Clip name", clip.name,
-      "Rot 3d", rotationRaw.rot3d,
-          "Has Position:", hasNoPosition, 
-          "No Rotation Object:", hasNoRotation, 
-          "Is Rot 0:", isRotationZero
-      );
-
-
-    // Dimensões do vídeo aplicadas via escala
-    const w = (clip.dimensions?.x || img.width) * zoom;
-    const h = (clip.dimensions?.y || img.height) * zoom;
-
-    // --- COMPENSAÇÃO DE PIVOT (A LÓGICA DO CENTER DO PYTHON) ---
+    // --- INTERPOLAÇÃO E DIMENSÕES ---
+    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
+    const rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d') || { rot: 0, rot3d: 0 };
     
-    // No Python: center = (w/2, h/2). 
-    // No Three.js: O Group deve estar no centro do objeto para que a rotação seja interna.
-    // pos.x e pos.y são o Top-Left da sua UI.
-    group.position.set(
-      pos.x + (w / 2) + ajustcenter, 
-      -(pos.y + (h / 2)), 
-      index * 0.1 // Z-index para não haver conflito de sobreposição
-    );
+    const hasPositionKfs = clip.keyframes?.position && Object.keys(clip.keyframes.position).length > 0;
+    const hasZoomKfs = clip.keyframes?.zoom && Object.keys(clip.keyframes.zoom).length > 0;
 
-    // 1. Rotação 2D (matrix_2d do Python) -> Aplicada ao Grupo
-    // Invertemos o sinal para bater com o comportamento do OpenCV
-    group.rotation.z = THREE.MathUtils.degToRad(-rotation.rot);
+    // Para Texto, usamos as dimensões do canvas ou do clip. No seu caso, tratamos como 16:9 fixo ou auto-fill
+    const clipW = clip.type === 'text' ? projW : (clip.dimensions?.x || (img ? img.width : projW));
+    const clipH = clip.type === 'text' ? projH / 4 : (clip.dimensions?.y || (img ? img.height : projH));
+    const clipAspect = clipW / clipH;
 
-    // 2. Rotação 3D (warpPerspective do Python) -> Aplicada ao Mesh
-    // O Mesh gira em torno do eixo Y que passa pelo (0,0,0) local, que é o centro do plano.
-    mesh.rotation.y = THREE.MathUtils.degToRad(rotation.rot3d);
+    const isSameAspect = clip.type === 'text' ? false : Math.abs(clipAspect - projectAspect) < 0.01;
+
+    let finalW: number, finalH: number, finalPosX: number, finalPosY: number;
+
+    if (isSameAspect) {
+      finalW = projW; finalH = projH;
+      if (!hasPositionKfs && !hasZoomKfs) {
+        finalPosX = 0; finalPosY = 0;
+      } else {
+        const zoomK = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
+        const posK = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
+        finalW *= zoomK; finalH *= zoomK;
+        
+        finalPosX = posK.x; 
+        finalPosY = posK.y;
+      }
+    } else {
+      const zoomVal = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
+      const posVal = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
+      finalW = clipW * zoomVal;
+      finalH = clipH * zoomVal;
+
+      //ajust for text
+      const ajustText = clip.type === 'text' ? 1 : 0
+
+      
+      finalPosX = posVal.x - 20 // + ajustText * (projW/2);
+      finalPosY = posVal.y - 120 + ajustText * (projH/2);
+    }
+
+    // --- AJUSTES FINAIS ---
+    let ajustcenter = (clip.dimensions?.x || finalW) / 5;
+    if (rotationRaw.rot3d === 0 || !rotationRaw.rot3d) ajustcenter = 0;
+    else if (rotationRaw.rot3d < 0) ajustcenter *= -1;
     
-    // Ajuste de escala final
-    mesh.scale.set(w, h, 1);
 
-    // --- BLEND MODES (SCREEN/OVERLAY) ---
+
+    group.position.set(finalPosX + (finalW / 2) + ajustcenter, -(finalPosY + (finalH / 2)), index * 0.1);
+    group.rotation.z = THREE.MathUtils.degToRad(-(rotationRaw.rot ?? 0));
+    mesh.rotation.y = THREE.MathUtils.degToRad(rotationRaw.rot3d ?? 0);
+    mesh.scale.set(finalW, finalH, 1);
+
+    // --- BLENDING ---
     mat.opacity = opacity;
     const mode = (clip.blendmode || 'normal').toLowerCase();
-    
-    // Reset para CustomBlending para suportar as equações que te passei antes
-    mat.blending = THREE.CustomBlending;
-    mat.blendEquation = THREE.AddEquation;
-    mat.blendSrc = THREE.SrcAlphaFactor;
-    mat.blendDst = THREE.OneMinusSrcAlphaFactor;
+    mat.blending = THREE.NormalBlending;
 
-    switch (mode) {
-      case 'screen':
-        mat.blendSrc = THREE.OneFactor;
-        mat.blendDst = THREE.OneMinusSrcColorFactor;
-        break;
-      case 'lineardodge':
-      case 'add':
-        mat.blendSrc = THREE.OneFactor;
-        mat.blendDst = THREE.OneFactor;
-        break;
-      case 'multiply':
-        mat.blending = THREE.MultiplyBlending;
-        break;
-      case 'overlay':
-        mat.blendSrc = THREE.DstColorFactor;
-        mat.blendDst = THREE.SrcColorFactor;
-        break;
-      default:
-        mat.blending = THREE.NormalBlending;
-        break;
+    if (mode === 'screen') {
+      mat.blending = THREE.CustomBlending;
+      mat.blendSrc = THREE.OneFactor;
+      mat.blendDst = THREE.OneMinusSrcColorFactor;
+    } else if (mode === 'add') {
+      mat.blending = THREE.AdditiveBlending;
     }
   });
 };
-
-
-
 
 
 const drawFrame = async (time: number) => {
@@ -1961,167 +2066,13 @@ const drawFrame = async (time: number) => {
   try {
     const loadedData = await fetchFramesFromRust(time);
     syncClipsToScene(loadedData, time);
+    console.log('ldata: ',loadedData)
     rendererRef.current.render(sceneRef.current, cameraRef.current);
   } catch (err) {
     console.error("Erro no drawFrame:", err);
   }
 };
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-const drawFrame_old = async (time: number) => {
-  if (!canvasRef.current) return;
-
-  const ctx = canvasRef.current.getContext('2d');
-  if (!ctx) return;
-
-  // Sincroniza dimensões do Canvas com o Projeto
-  if (canvasRef.current.width !== projectConfig.width || canvasRef.current.height !== projectConfig.height) {
-    canvasRef.current.width = projectConfig.width;
-    canvasRef.current.height = projectConfig.height;
-  }
-
-  // Se não houver clipes, limpa a tela e sai
-  if (!topClips.current || topClips.current.length === 0) {
-    ctx.fillStyle = "black";
-    ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-    return;
-  }
-
-  // Controle de FPS para o Preview
-  const now = performance.now();
-  if (isPlaying && (now - lastFrameTimeRef.current < (1000 / projectConfig.fps))) return;
-  lastFrameTimeRef.current = now;
-
-  const blendModeMap: Record<string, GlobalCompositeOperation> = {
-    'normal': 'source-over',
-    'screen': 'screen',
-    'multiply': 'multiply',
-    'overlay': 'overlay',
-    'lineardodge': 'lighter',
-  };
-
-  try {
-    // --- FASE 1: BUSCA DE FRAMES ---
-    const framePromises = topClips.current.map(async (clip) => {
-      const timelineRelativeTime = time - clip.start;
-      let assetRelativeTime = timelineRelativeTime;
-
-      // Cálculo de Speed Ramp (Se houver keyframes de velocidade)
-      if (clip.keyframes?.speed && clip.keyframes.speed.length > 0) {
-        // assetRelativeTime = calculateSpeedRamp(timelineRelativeTime, clip.keyframes.speed);
-      }
-
-      const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
-      const path = `${currentProjectPath}/videos/${clip.name}`;
-
-      try {
-        const frameBase64 = await invoke('get_video_frame', { path, timeMs: clipTimeMs });
-        return new Promise((resolve) => {
-          const img = new Image();
-          img.onload = () => resolve(img);
-          img.onerror = () => resolve(null);
-          img.src = frameBase64;
-        });
-      } catch (e) { return null; }
-    });
-
-    const loadedImages = await Promise.all(framePromises);
-
-    // --- FASE 2: RENDERIZAÇÃO ---
-    ctx.fillStyle = "black";
-    ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-    // Renderiza de baixo para cima (respeitando camadas)
-    for (let i = loadedImages.length - 1; i >= 0; i--) {
-      const img = loadedImages[i] as HTMLImageElement;
-      const clip = topClips.current[i];
-      if (!img) continue;
-
-      // 1. Interpolação de Keyframes
-      const opacity = getInterpolatedValueWithFades(time, clip, 'opacity');
-      const zoom = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-      const pos = getInterpolatedValueWithFades(time, clip, 'position') as { x: number, y: number };
-      const rotation = getInterpolatedValueWithFades(time, clip, 'rotation3d') as { rot: number, rot3d: number } 
-        || { rot: 0, rot3d: 0 };
-
-      // 2. Definição de Tamanho e Posição
-      const clipW = (clip.dimensions?.x || img.width) * zoom;
-      const clipH = (clip.dimensions?.y || img.height) * zoom;
-      const targetX = pos ? pos.x : (canvasRef.current.width - clipW) / 2;
-      const targetY = pos ? pos.y : (canvasRef.current.height - clipH) / 2;
-
-      ctx.save();
-      ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
-      ctx.globalCompositeOperation = blendModeMap[clip.blendmode || 'normal'] || 'source-over';
-
-      // --- CONFIGURAÇÃO 3D ---
-      const focalLength = 1200; // Intensidade da perspectiva
-      const radY = (rotation.rot3d || 0) * Math.PI / 180; // Rotação Y (Giro 3D)
-      const radZ = (rotation.rot || 0) * Math.PI / 180;   // Rotação Z (Plano XY)
-
-      // Move para o centro do clip na tela
-      ctx.translate(targetX + clipW / 2, targetY + clipH / 2);
-      ctx.rotate(radZ);
-
-      // Quantidade de tiras para o efeito (60-80 é o ponto ideal entre performance e qualidade)
-      const slices = 60;
-      const sliceW = clipW / slices;
-
-      for (let s = 0; s < slices; s++) {
-        // Distância X da tira em relação ao centro do clip
-        const x = s * sliceW - clipW / 2;
-        
-        // Cálculo da profundidade Z baseada no Seno do ângulo de rotação
-        const z = x * Math.sin(radY);
-        
-        // Fator de escala da perspectiva (quem está mais perto do Z parece maior)
-        const scale = focalLength / (focalLength - z);
-        
-        // Posição X projetada após a rotação e perspectiva
-        const projectedX = x * Math.cos(radY) * scale;
-
-        ctx.save();
-        ctx.translate(projectedX, 0);
-        ctx.scale(scale, scale);
-
-        // Desenha a fatia vertical correspondente da imagem fonte
-        ctx.drawImage(
-          img,
-          (s * img.width) / slices, 0,     // Fonte X, Y
-          img.width / slices, img.height,  // Fonte Largura, Altura
-          -sliceW / 2, -clipH / (2 * zoom), // Destino X, Y (Compensando o centro)
-          sliceW + 0.5, clipH / zoom       // Destino L, A (+0.5 evita linhas entre fatias)
-        );
-        ctx.restore();
-      }
-
-      ctx.restore();
-    }
-  } catch (err) {
-    console.error("Erro na renderização do frame:", err);
-  }
-};
 
 
 
@@ -2957,7 +2908,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
         lastModified: Date.now()
       };
 
-      console.log('saveproject', projectData)
+      //console.log('saveproject', projectData)
       
 
       
@@ -3673,7 +3624,7 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
           
           const newClip: Clip = {
             id: crypto.randomUUID(),
-            name: assetName,
+            name: type ==='text' ? 'Text' : assetName,
             start: dropTime,
             duration: deleteClip ? deleteClip.duration : 10,
             originalduration: originalduration,
@@ -3684,10 +3635,10 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
             dimensions: dimensions,
             scale: 1,
             type: type,
-            text: type === 'text' ? 'Text' : null,
             font: type === 'text' ? (dragData?.font || "SofiaRoughBlackInline") : null,
             font_size: type === 'text' ? 14 : null,
-            font_shine: type === 'text' ? { size: 0, intensity: 0, color: null } : null
+            font_shine: type === 'text' ? { size: 0, intensity: 0, color: null } : null,
+            font_color: '#ffffff' 
           };
 
 
@@ -3723,63 +3674,60 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   e.preventDefault();
   e.stopPropagation();
 
+  // 1. Coleta dados do JSON (Subclips ou Fontes do Sidebar)
+  const jsonData = e.dataTransfer.getData("application/json") || null;
+  const dragData = jsonData ? JSON.parse(jsonData) : null;
 
-  //colect subclip if its dropped
-  const data = e.dataTransfer.getData("application/json") || null;
-  const droppedClip = data ? JSON.parse(data) : null;
-
-
-  
-  
-
-
-
-
-
-  
+  // Se houver arquivos físicos sendo arrastados, saímos (outra função cuida disso)
   if (e.dataTransfer.files.length > 0) return;
 
   const assetName = e.dataTransfer.getData("assetName");
-  if (!assetName && !data) return;
+  
+  // Se não tem nome de asset nem dados de drag, não há o que criar
+  if (!assetName && !dragData) return;
 
   const container = e.currentTarget.getBoundingClientRect();
-  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
   
-  const relativeY = e.clientY - container.top;
-  const x = e.clientX - container.left - 200;
-
-  //last term to calibrate with  zoom
-  const dropTime = Math.max(0, x / PIXELS_PER_SECOND) * (2/pixelsPerSecond);
+  // Cálculo do tempo de drop baseado no scroll e zoom
+  const x = e.clientX - container.left;
+  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+  const dropTime = Math.max(0, (x + scrollLeft) / pixelsPerSecond);
 
   const TRACK_HEIGHT = 80;
   const totalTracksHeight = tracks.length * TRACK_HEIGHT;
   const margin = 20;
+  const relativeY = e.clientY - container.top;
 
-  // If drop above or below, but close a new track is created
-
-
-  if(droppedClip && droppedClip.beginmoment && droppedClip.beginmoment > 0)
-  {
-    if (relativeY < -margin) {
-       createClipOnNewTrack(droppedClip.name, dropTime, droppedClip.beginmoment)     
-    } else if (relativeY > totalTracksHeight + margin) {
-       createClipOnNewTrack(droppedClip.name, dropTime, droppedClip.beginmoment) 
-    }
+  // Determine the type and identify if it's a Font/Text
+  const isText = dragData?.type === 'text';
+  const whatType = isText ? 'text' : knowTypeByAssetName(assetName, true);
   
-  return
-  }
-  
-  if (relativeY < -margin) {
-    createClipOnNewTrack(assetName, dropTime);
+  // Define o nome que será usado (nome da fonte ou nome do asset)
+  const finalName = isText ? (dragData?.font || "New Text") : assetName;
+  const beginMoment = dragData?.beginmoment || 0;
+
+  /**
+   * Lógica de criação:
+   * Se soltar acima da primeira track ou abaixo da última (respeitando a margem),
+   * criamos uma nova track do tipo correto.
+   */
+  if (relativeY < -margin || relativeY > totalTracksHeight + margin) {
     
-  } else if (relativeY > totalTracksHeight + margin) {
-    createClipOnNewTrack(assetName, dropTime);
+    // Chamamos a função de criação de nova track passando o tipo explicitamente
+    // Note: Adicionei o parâmetro 'whatType' para que a nova track já nasça com o tipo certo
+    createClipOnNewTrack(
+      finalName, 
+      dropTime, 
+      beginMoment, 
+      10,
+      whatType, // Passamos 'text', 'video', 'audio', etc.
+      dragData
+    );
   }
-
-  
-
-
 };
+
+
+
 
 
 //function to return order track as the are in the render ui
@@ -4532,7 +4480,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
 
      const newClip: Clip = {
         id: crypto.randomUUID(),
-        name: whatType === 'text' ? (dragData?.font || "New Text") : assetName,
+        name: whatType === 'text' ? "Text" : assetName,
         start: dropTime,
         duration: dragData?.duration || defaultDuration,
         originalduration: dragData?.duration || defaultDuration,
@@ -4543,10 +4491,10 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
         dimensions: assetNow?.dimensions || null,
         scale: 1,
         type: whatType,
-        text: whatType === 'text' ? 'Text' : null,
         font: whatType === 'text' ? (dragData?.font || "SofiaRoughBlackInline") : null,
         font_size: whatType === 'text' ? 14 : null,
-        font_shine: whatType === 'text' ? { size: 0, intensity: 0, color: null } : null
+        font_shine: whatType === 'text' ? { size: 0, intensity: 0, color: null } : null,
+        font_color: '#ffffff'
       };
 
       setClips(prev => [...prev, newClip]);
@@ -6955,9 +6903,7 @@ return (
                   className="text-[9px] font-black text-white uppercase italic leading-none drop-shadow-lg truncate max-w-[80%]"
                   style={{ marginLeft: assetTarget?.type !== 'video' ? '0' : '64px' }} // Ajusta se houver thumbnail
                 >
-                  { 
-                    clip.type === 'text' ? clip.text : clip.name
-                  }
+                  {clip.name}
                 </p>
               </div>
 
