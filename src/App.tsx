@@ -157,6 +157,8 @@ interface Clip {
   font?: string | null;
   font_size?: number | null ; // px
   font_color?: string | null;
+  font_bgcolor?: string | null;
+  bg_dimetions?: Position |null; //for text background
   font_shine?: Font_Shine | null;
   
 
@@ -1721,7 +1723,179 @@ const fetchFramesFromRust = async (time: number) => {
 };
 
 
+
+
+
 const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement | null, clip: any }[], time: number) => {
+  const scene = sceneRef.current;
+  if (!scene || !rendererRef.current) return;
+
+  const projW = projectConfig.width; 
+  const projH = projectConfig.height;
+  const projectAspect = projW / projH;
+
+  const loadedIds = new Set(loadedData.map(d => d.id));
+  
+  // 1. LIMPEZA (GC) - Mantido igual ao seu original
+  groupsRef.current.forEach((group, id) => {
+    if (!loadedIds.has(id)) {
+      scene.remove(group);
+      const mesh = group.children[0] as THREE.Mesh;
+      if (mesh.material instanceof THREE.MeshBasicMaterial && mesh.material.map) {
+        mesh.material.map.dispose();
+      }
+      groupsRef.current.delete(id);
+    }
+  });
+
+  // 2. RENDERIZAÇÃO
+  loadedData.forEach(({ id, img, clip }, index) => {
+    let group = groupsRef.current.get(id);
+    let mesh: THREE.Mesh;
+
+    if (!group) {
+      group = new THREE.Group();
+      const geometry = new THREE.PlaneGeometry(1, 1);
+      geometry.center(); 
+      const material = new THREE.MeshBasicMaterial({ 
+        transparent: true, 
+        side: THREE.DoubleSide,
+        depthWrite: false 
+      });
+      mesh = new THREE.Mesh(geometry, material);
+      mesh.rotation.order = 'YXZ'; 
+      group.add(mesh);
+      scene.add(group);
+      groupsRef.current.set(id, group);
+    } else {
+      mesh = group.children[0] as THREE.Mesh;
+    }
+
+    const mat = mesh.material as THREE.MeshBasicMaterial;
+    if (mat.map) mat.map.dispose();
+
+    // --- LÓGICA DE TEXTO ADAPTADA ---
+    if (clip.type === 'text') {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+
+
+        // 1. Desenhar Background (font_bgcolor + bg_dimetions)
+        const bgWidth = clip.bg_dimetions?.x || 400; // Default se nulo
+        const bgHeight = clip.bg_dimetions?.y || 100;
+        const bgColor = clip.font_bgcolor || 'transparent';
+
+        
+        // Aumentamos a resolução para suportar dimensões customizadas de BG
+        canvas.width = 1024;
+        canvas.height = 512;
+        
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+
+        
+
+        if (bgColor !== 'transparent') {
+          ctx.fillStyle = bgColor;
+          // Desenha o retângulo centralizado
+          ctx.fillRect(
+            centerX - (bgWidth / 2), 
+            centerY - (bgHeight / 2), 
+            bgWidth, 
+            bgHeight
+          );
+        }
+
+        // 2. Configurar Texto
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        // Cor do texto (font_color)
+        ctx.fillStyle = clip.font_color || 'white'; 
+        
+        const fontSize = clip.font_size || 14;
+        ctx.font = `${fontSize * 4}px "${clip.font || 'Arial'}"`; 
+        
+        // Font Shine (Dynamic Glow)
+        if (clip.font_shine && clip.font_shine.intensity > 0) {
+          ctx.shadowColor = clip.font_shine.color || 'white';
+          ctx.shadowBlur = clip.font_shine.size || 10;
+        }
+
+        // Desenhar o texto no exato centro do background/canvas
+        ctx.fillText(clip.name, centerX, centerY);
+        
+        const textTexture = new THREE.CanvasTexture(canvas);
+        textTexture.colorSpace = THREE.SRGBColorSpace;
+        mat.map = textTexture;
+      }
+    } else if (img) {
+      const texture = new THREE.Texture(img);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.needsUpdate = true;
+      mat.map = texture;
+    }
+
+    // --- INTERPOLAÇÃO DE ROTAÇÃO (Mantido conforme seu código) ---
+    // ... (lógica de interpolação do rotationRaw)
+    const rotationKfs = clip.keyframes?.rotation3d || [];
+    let rotationRaw = { rot: 0, rot3d: 0 };
+    if (rotationKfs.length > 0) {
+        const sortedKfs = [...rotationKfs].sort((a, b) => a.time - b.time);
+        const nextIdx = sortedKfs.findIndex(kf => kf.time > time);
+        if (nextIdx === -1) rotationRaw = sortedKfs[sortedKfs.length - 1].value;
+        else if (nextIdx === 0) rotationRaw = sortedKfs[0].value;
+        else {
+            const prev = sortedKfs[nextIdx - 1]; const next = sortedKfs[nextIdx];
+            const t = (time - prev.time) / (next.time - prev.time);
+            rotationRaw = {
+                rot: prev.value.rot + (next.value.rot - prev.value.rot) * t,
+                rot3d: prev.value.rot3d + (next.value.rot3d - prev.value.rot3d) * t
+            };
+        }
+    } else {
+        rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d') || { rot: 0, rot3d: 0 };
+    }
+
+    // --- DIMENSIONS & POSITIONING ---
+    // Para o texto, agora usamos uma altura um pouco maior (512 vs 256) para acomodar backgrounds maiores
+    const clipW = clip.type === 'text' ? projW : (clip.dimensions?.x || (img ? img.width : projW));
+    const clipH = clip.type === 'text' ? projH / 2 : (clip.dimensions?.y || (img ? img.height : projH));
+    
+    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
+    const zoomVal = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
+    const posVal = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
+
+    let finalW = clipW * zoomVal;
+    let finalH = clipH * zoomVal;
+
+    // Ajuste de posição conforme sua lógica original
+    const ajustText = clip.type === 'text' ? 1 : 0;
+    let finalPosX = posVal.x - 20;
+    let finalPosY = posVal.y - 120 + (ajustText * (projH / 4)); // Ajustado pela nova altura do clipH de texto
+
+    // --- FINAL TRANSFORMS ---
+    let ajustcenter = (clip.dimensions?.x || finalW) / 5;
+    if (!rotationRaw.rot3d || rotationRaw.rot3d === 0) ajustcenter = 0;
+    else if (rotationRaw.rot3d < 0) ajustcenter *= -1;
+
+    group.position.set(finalPosX + (finalW / 2) + ajustcenter, -(finalPosY + (finalH / 2)), index * 0.1);
+    group.rotation.z = THREE.MathUtils.degToRad(-(rotationRaw.rot ?? 0));
+    mesh.rotation.y = THREE.MathUtils.degToRad(rotationRaw.rot3d ?? 0);
+    mesh.scale.set(finalW, finalH, 1);
+
+    // --- BLENDING & OPACITY ---
+    mat.opacity = opacity;
+    const mode = (clip.blendmode || 'normal').toLowerCase();
+    mat.blending = THREE.NormalBlending;
+    if (mode === 'screen') { mat.blending = THREE.CustomBlending; mat.blendSrc = THREE.OneFactor; mat.blendDst = THREE.OneMinusSrcColorFactor; }
+    else if (mode === 'add') mat.blending = THREE.AdditiveBlending;
+    else if (mode === 'multiply') mat.blending = THREE.MultiplyBlending;
+  });
+};
+
+const syncClipsToScene_old2 = (loadedData: { id: string, img: HTMLImageElement | null, clip: any }[], time: number) => {
   const scene = sceneRef.current;
   if (!scene || !rendererRef.current) return;
 
@@ -1892,6 +2066,8 @@ const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement | null
     }
   });
 };
+
+
 
 const syncClipsToScene_old = (loadedData: { id: string, img: HTMLImageElement | null, clip: Clip }[], time: number) => {
   const scene = sceneRef.current;
@@ -3534,6 +3710,8 @@ const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) =>
 {
    const extension = assetName.split('.').pop()?.toLowerCase() || '';
 
+
+
     // 2. Define allowed extensions for each type
     
 
@@ -3541,6 +3719,8 @@ const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) =>
     const isImage = imageExtensions.includes(extension);
     const isAudio = audioExtensions.includes(extension);
     const isVideo = videoExtensions.includes(extension);
+
+
 
     if (!isImage && !isAudio && !isVideo) {
 
@@ -3563,10 +3743,12 @@ const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) =>
     if (isAudio) type = 'audio';
 
 
-    if(typeTrack && (type == 'image'))
+
+    if(typeTrack && type == 'image')
       return 'video'
 
 
+    return type
 
 }
 
@@ -4462,11 +4644,11 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     const fontPath = e.dataTransfer.getData("fontPath"); // From handleDragStartText
     
     // Determine type: check dragData first, then asset name
-    alert('dD: '+ dragData.type)
-    const whatType = dragData?.type === 'text' ? 'text' : knowTypeByAssetName(assetName, true);
+    const whatType = dragData?.type == 'text' ? 'text' : knowTypeByAssetName(assetName, true);
 
-    alert('whatType: '+ whatType)
-    
+
+
+
     const assetNow = assets.find(a => a.name === assetName);
     
     // Setup durations: Text is effectively infinite, Media follows asset duration
@@ -6256,6 +6438,7 @@ return (
       getInterpolatedValueWithFades={getInterpolatedValueWithFades}
       knowTypeByAssetName={knowTypeByAssetName}
       COLOR_MAP={COLOR_MAP}
+      availableFonts = {availableFonts}
     />
 
 
