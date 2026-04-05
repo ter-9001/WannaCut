@@ -868,6 +868,9 @@ const startExport = async () => {
   return Math.round(num * 100) / 100;
 };
 
+  const sorted_tracks = order_tracks();
+  const sortedTracksId = sorted_tracks.map(t => t.id);
+
   const clips_format = await Promise.all(clips.map(async (c) => {
       // Criamos uma cópia para não mexer no estado original da UI
       let fontPath = c.font;
@@ -893,14 +896,21 @@ const startExport = async () => {
         ...c,
         font: fontPath, // Usa o path resolvido
         path: `${currentProjectPath}/videos/${c.name}`,
-        trackId: c.trackId.toString(),
         type: c.type ? c.type : knowTypeByAssetName(c.name),
         mute: c.mute ?? false,
         beginmoment: sanitizeNumber(c.beginmoment),
         duration: sanitizeNumber(c.duration),
         start: sanitizeNumber(c.start)
       };
-    }));
+    })
+  );
+
+
+  const sort_clip = clips_format.sort((a, b) => {
+    const trackA = sortedTracksId.indexOf(a.trackId);
+    const trackB = sortedTracksId.indexOf(b.trackId);
+    return trackA - trackB;
+  })
 
     // 2. Agora o clips_format é um array real de objetos, não de Promises
     await invoke('export_video', {
@@ -911,7 +921,7 @@ const startExport = async () => {
         width: projectConfig.width || 1920, // Corrigido de 1980 para 1920 (padrão HD)
         height: projectConfig.height || 1080 
       },
-      clips: clips_format
+      clips: sort_clip
     });
 
   } catch (error) {
