@@ -302,8 +302,6 @@ const [availableFonts, setAvailableFonts] = useState<string[]>([]);
 const loadSystemFonts = async () => {
     const fontsDir = `${localStorage.getItem("freecut_settings_folder")}/fonts`;
 
-    console.log('fontsdir ',fontsDir)
-
 
     try {
         const fontPaths = await invoke<string[]>('list_fonts', { fontsPath: fontsDir });
@@ -870,39 +868,55 @@ const startExport = async () => {
   return Math.round(num * 100) / 100;
 };
 
-  const clips_format = clips.map( c => { 
-    
-    
-    return {
-    ...c ,path: `${currentProjectPath}/videos/${c.name}` ,
-    trackId: c.trackId.toString(),
-    type: c.type ? c.type : knowTypeByAssetName(c.name),
-    mute: c.mute ?? false,
-    beginmoment: sanitizeNumber(c.beginmoment),
-    duration: sanitizeNumber(c.duration),
-    start: sanitizeNumber(c.start)
-    }})
+  const clips_format = await Promise.all(clips.map(async (c) => {
+      // Criamos uma cópia para não mexer no estado original da UI
+      let fontPath = c.font;
 
+      if (c.type === 'text') {
+        const fontsDir = `${localStorage.getItem("freecut_settings_folder")}/fonts`;
+        try {
+          const fontPaths = await invoke<string[]>('list_fonts', { fontsPath: fontsDir });
+          
+          for (const path of fontPaths) {
+            const fontName = path.split(/[\\/]/).pop()?.split('.')[0] || "Unknown";
+            if (fontName.toLowerCase() === c.font?.toLowerCase()) {
+              fontPath = path; // Define o caminho completo da fonte
+              break;
+            }
+          }
+        } catch (e) {
+          console.error("Erro ao listar fontes:", e);
+        }
+      }
 
+      return {
+        ...c,
+        font: fontPath, // Usa o path resolvido
+        path: `${currentProjectPath}/videos/${c.name}`,
+        trackId: c.trackId.toString(),
+        type: c.type ? c.type : knowTypeByAssetName(c.name),
+        mute: c.mute ?? false,
+        beginmoment: sanitizeNumber(c.beginmoment),
+        duration: sanitizeNumber(c.duration),
+        start: sanitizeNumber(c.start)
+      };
+    }));
 
-
-
-    // 2. Chama o Rust
+    // 2. Agora o clips_format é um array real de objetos, não de Promises
     await invoke('export_video', {
       projectPath: currentProjectPath,
-      exportPath: targetPath, 
-      projectDimensions: { width: projectConfig.width || 1980, height: projectConfig.height || 1080 },
+      exportPath: targetPath,
+      freecutSettings: localStorage.getItem("freecut_settings_folder"),
+      projectDimensions: { 
+        width: projectConfig.width || 1920, // Corrigido de 1980 para 1920 (padrão HD)
+        height: projectConfig.height || 1080 
+      },
       clips: clips_format
     });
 
-    // Se chegar aqui, terminou com sucesso
-    // setIsRendering(false); // Opcional: fechar ao terminar
-
-    
-
   } catch (error) {
     console.error("Export Error:", error);
-    setRenderStatus('idle'); // Fecha se der erro
+    setRenderStatus('idle');
   }
 };
 
@@ -1723,9 +1737,6 @@ const fetchFramesFromRust = async (time: number) => {
 };
 
 
-
-
-
 const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement | null, clip: any }[], time: number) => {
   const scene = sceneRef.current;
   if (!scene || !rendererRef.current) return;
@@ -1736,7 +1747,7 @@ const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement | null
 
   const loadedIds = new Set(loadedData.map(d => d.id));
   
-  // 1. LIMPEZA (GC) - Mantido igual ao seu original
+  // 1. LIMPEZA (GC)
   groupsRef.current.forEach((group, id) => {
     if (!loadedIds.has(id)) {
       scene.remove(group);
@@ -1774,57 +1785,35 @@ const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement | null
     const mat = mesh.material as THREE.MeshBasicMaterial;
     if (mat.map) mat.map.dispose();
 
-    // --- LÓGICA DE TEXTO ADAPTADA ---
+    // --- LÓGICA DE TEXTURA (RESTAURADA E MELHORADA) ---
     if (clip.type === 'text') {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       if (ctx) {
-
-
-        // 1. Desenhar Background (font_bgcolor + bg_dimetions)
-        const bgWidth = clip.bg_dimetions?.x || 400; // Default se nulo
-        const bgHeight = clip.bg_dimetions?.y || 100;
+        // Mantemos o padrão de 1024x256 que você usava antes para o "size" não quebrar
+        canvas.width = 1024; 
+        canvas.height = 256;
+        
+        // Fundo (font_bgcolor)
         const bgColor = clip.font_bgcolor || 'transparent';
-
-        
-        // Aumentamos a resolução para suportar dimensões customizadas de BG
-        canvas.width = 1024;
-        canvas.height = 512;
-        
-        const centerX = canvas.width / 2;
-        const centerY = canvas.height / 2;
-
-        
-
         if (bgColor !== 'transparent') {
           ctx.fillStyle = bgColor;
-          // Desenha o retângulo centralizado
-          ctx.fillRect(
-            centerX - (bgWidth / 2), 
-            centerY - (bgHeight / 2), 
-            bgWidth, 
-            bgHeight
-          );
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
 
-        // 2. Configurar Texto
+        ctx.fillStyle = clip.font_color || 'white'; 
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         
-        // Cor do texto (font_color)
-        ctx.fillStyle = clip.font_color || 'white'; 
-        
         const fontSize = clip.font_size || 14;
-        ctx.font = `${fontSize * 4}px "${clip.font || 'Arial'}"`; 
+        ctx.font = `${fontSize * 4}px "${clip.font}"`; 
         
-        // Font Shine (Dynamic Glow)
         if (clip.font_shine && clip.font_shine.intensity > 0) {
           ctx.shadowColor = clip.font_shine.color || 'white';
           ctx.shadowBlur = clip.font_shine.size || 10;
         }
 
-        // Desenhar o texto no exato centro do background/canvas
-        ctx.fillText(clip.name, centerX, centerY);
+        ctx.fillText(clip.name, canvas.width / 2, canvas.height / 2);
         
         const textTexture = new THREE.CanvasTexture(canvas);
         textTexture.colorSpace = THREE.SRGBColorSpace;
@@ -1837,47 +1826,58 @@ const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement | null
       mat.map = texture;
     }
 
-    // --- INTERPOLAÇÃO DE ROTAÇÃO (Mantido conforme seu código) ---
-    // ... (lógica de interpolação do rotationRaw)
+    // --- INTERPOLAÇÃO (MANTIDA) ---
     const rotationKfs = clip.keyframes?.rotation3d || [];
     let rotationRaw = { rot: 0, rot3d: 0 };
     if (rotationKfs.length > 0) {
-        const sortedKfs = [...rotationKfs].sort((a, b) => a.time - b.time);
-        const nextIdx = sortedKfs.findIndex(kf => kf.time > time);
-        if (nextIdx === -1) rotationRaw = sortedKfs[sortedKfs.length - 1].value;
-        else if (nextIdx === 0) rotationRaw = sortedKfs[0].value;
-        else {
-            const prev = sortedKfs[nextIdx - 1]; const next = sortedKfs[nextIdx];
-            const t = (time - prev.time) / (next.time - prev.time);
-            rotationRaw = {
-                rot: prev.value.rot + (next.value.rot - prev.value.rot) * t,
-                rot3d: prev.value.rot3d + (next.value.rot3d - prev.value.rot3d) * t
-            };
-        }
+      const sortedKfs = [...rotationKfs].sort((a, b) => a.time - b.time);
+      const nextIdx = sortedKfs.findIndex(kf => kf.time > time);
+      if (nextIdx === -1) rotationRaw = sortedKfs[sortedKfs.length - 1].value;
+      else if (nextIdx === 0) rotationRaw = sortedKfs[0].value;
+      else {
+        const prev = sortedKfs[nextIdx - 1];
+        const next = sortedKfs[nextIdx];
+        const t = (time - prev.time) / (next.time - prev.time);
+        rotationRaw = {
+          rot: prev.value.rot + (next.value.rot - prev.value.rot) * t,
+          rot3d: prev.value.rot3d + (next.value.rot3d - prev.value.rot3d) * t
+        };
+      }
     } else {
-        rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d') || { rot: 0, rot3d: 0 };
+      rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d') || { rot: 0, rot3d: 0 };
     }
 
-    // --- DIMENSIONS & POSITIONING ---
-    // Para o texto, agora usamos uma altura um pouco maior (512 vs 256) para acomodar backgrounds maiores
+    // --- DIMENSIONS & POSITIONING (RESTAURADO) ---
+    // Voltando para a lógica exata de clipW/clipH que você tinha antes
     const clipW = clip.type === 'text' ? projW : (clip.dimensions?.x || (img ? img.width : projW));
-    const clipH = clip.type === 'text' ? projH / 2 : (clip.dimensions?.y || (img ? img.height : projH));
-    
-    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
-    const zoomVal = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-    const posVal = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
+    const clipH = clip.type === 'text' ? projH / 4 : (clip.dimensions?.y || (img ? img.height : projH));
+    const clipAspect = clipW / clipH;
 
-    let finalW = clipW * zoomVal;
-    let finalH = clipH * zoomVal;
+    const isSameAspect = clip.type === 'text' ? false : Math.abs(clipAspect - projectAspect) < 0.01;
 
-    // Ajuste de posição conforme sua lógica original
-    const ajustText = clip.type === 'text' ? 1 : 0;
-    let finalPosX = posVal.x - 20;
-    let finalPosY = posVal.y - 120 + (ajustText * (projH / 4)); // Ajustado pela nova altura do clipH de texto
+    let finalW: number, finalH: number, finalPosX: number, finalPosY: number;
 
-    // --- FINAL TRANSFORMS ---
+    if (isSameAspect) {
+      finalW = projW; finalH = projH;
+      const zoomK = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
+      const posK = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
+      finalW *= zoomK; finalH *= zoomK;
+      finalPosX = posK.x; finalPosY = posK.y;
+    } else {
+      const zoomVal = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
+      const posVal = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
+      finalW = clipW * zoomVal;
+      finalH = clipH * zoomVal;
+
+      const ajustText = clip.type === 'text' ? 1 : 0;
+      // RESTAURADO: Offsets mágicos que mantêm a sincronia com o seu editor
+      finalPosX = posVal.x - 20;
+      finalPosY = posVal.y - 120 + (ajustText * (projH / 2));
+    }
+
+    // --- TRANSFORMS (MANTIDO) ---
     let ajustcenter = (clip.dimensions?.x || finalW) / 5;
-    if (!rotationRaw.rot3d || rotationRaw.rot3d === 0) ajustcenter = 0;
+    if (!rotationRaw.rot3d) ajustcenter = 0;
     else if (rotationRaw.rot3d < 0) ajustcenter *= -1;
 
     group.position.set(finalPosX + (finalW / 2) + ajustcenter, -(finalPosY + (finalH / 2)), index * 0.1);
@@ -1886,11 +1886,15 @@ const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement | null
     mesh.scale.set(finalW, finalH, 1);
 
     // --- BLENDING & OPACITY ---
+    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
     mat.opacity = opacity;
     const mode = (clip.blendmode || 'normal').toLowerCase();
     mat.blending = THREE.NormalBlending;
-    if (mode === 'screen') { mat.blending = THREE.CustomBlending; mat.blendSrc = THREE.OneFactor; mat.blendDst = THREE.OneMinusSrcColorFactor; }
-    else if (mode === 'add') mat.blending = THREE.AdditiveBlending;
+    if (mode === 'screen') {
+      mat.blending = THREE.CustomBlending;
+      mat.blendSrc = THREE.OneFactor;
+      mat.blendDst = THREE.OneMinusSrcColorFactor;
+    } else if (mode === 'add') mat.blending = THREE.AdditiveBlending;
     else if (mode === 'multiply') mat.blending = THREE.MultiplyBlending;
   });
 };

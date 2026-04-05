@@ -288,13 +288,17 @@ async fn export_video(
     state: tauri::State<'_, ExportState>,
     project_path: String,
     export_path: String,
+    freecut_settings: String,
     project_dimensions: serde_json::Value,
     clips: serde_json::Value,
 ) -> Result<(), String> {
     
+
     // 1. Criar o objeto de configuração
+
     let config_data = serde_json::json!({
         "project_path": project_path,
+        "freecut_settings": freecut_settings,
         "export_path": export_path,
         "project_dimensions": project_dimensions,
         "clips": clips
