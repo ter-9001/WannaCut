@@ -9,6 +9,7 @@ from moviepy.video.VideoClip import VideoClip
 from proglog import ProgressBarLogger
 from PIL import Image, ImageDraw, ImageFont
 
+# --- LOGGER ---
 class RawPercentageLogger(ProgressBarLogger):
     def __init__(self):
         super().__init__()
@@ -56,31 +57,80 @@ def get_interpolated_value(keyframes, t, default_value):
             return float(v1) + (float(v2) - float(v1)) * f
     return default_value
 
-def apply_3d_rotation(img_rgba, rot_deg, rot3d_deg):
-    h, w = img_rgba.shape[:2]
-    center = (w / 2, h / 2)
-    matrix_2d = cv2.getRotationMatrix2D(center, -float(rot_deg), 1.0)
-    img_rgba = cv2.warpAffine(img_rgba, matrix_2d, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0,0))
-    if abs(float(rot3d_deg)) < 0.1: return img_rgba
-    rad = np.radians(float(rot3d_deg))
-    fov = 0.3
-    src_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
-    dist_w = (w / 2) * np.cos(rad)
-    off = (w / 2) * np.sin(rad) * fov
-    dst_pts = np.float32([[center[0]-dist_w, 0+off], [center[0]+dist_w, 0-off], [center[0]+dist_w, h+off], [center[0]-dist_w, h-off]])
-    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-    return cv2.warpPerspective(img_rgba, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0,0))
+def apply_3d_rotation(img, rot_z, rot_y):
+    h, w = img.shape[:2]
+    
+    # Padding para evitar cortes (Canvas expandido)
+    padding = max(w, h)
+    img_padded = cv2.copyMakeBorder(img, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=(0,0,0,0))
+    nh, nw = img_padded.shape[:2]
+    
+    theta = np.radians(float(rot_z))
+    phi = np.radians(float(rot_y))
+    
+    f = max(nw, nh) 
+    dist = f 
+
+    # Matriz Intrínseca da Câmera (K)
+    K = np.array([
+        [f, 0, nw/2],
+        [0, f, nh/2],
+        [0, 0, 1]
+    ], dtype=np.float32)
+
+    # Matriz de Rotação Y (Perspectiva)
+    R_y = np.array([
+        [np.cos(phi), 0, np.sin(phi), 0],
+        [0, 1, 0, 0],
+        [-np.sin(phi), 0, np.cos(phi), 0],
+        [0, 0, 0, 1]
+    ], dtype=np.float32)
+
+    # Matriz de Rotação Z (Giro Plano)
+    R_z = np.array([
+        [np.cos(theta), -np.sin(theta), 0, 0],
+        [np.sin(theta), np.cos(theta), 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ], dtype=np.float32)
+
+    R = R_z @ R_y
+
+    # Matriz de Translação (Move para longe da câmera)
+    T = np.array([
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, dist],
+        [0, 0, 0, 1]
+    ], dtype=np.float32)
+
+    # Centralização
+    center_transform = np.array([
+        [1, 0, 0, -nw/2],
+        [0, 1, 0, -nh/2],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ], dtype=np.float32)
+
+    # Cálculo da Matriz de Perspectiva Final (3x3)
+    M_full = T @ R @ center_transform
+    # Multiplicamos K (3x3) pela parte relevante da matriz de transformação (3x4)
+    M_3x4 = M_full[:3, :]
+    M_final = K @ M_3x4
+
+    # O OpenCV precisa de uma matriz 3x3. Como o Z de entrada é 0 (imagem plana),
+    # nós removemos a terceira coluna (que lidaria com a profundidade Z do objeto original)
+    M_reduced = np.delete(M_final, 2, 1)
+
+    return cv2.warpPerspective(img_padded, M_reduced, (nw, nh), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0,0))
 
 def generate_text_frame(clip_data, proj_w, proj_h):
-    # Se o clipe tem bg_dimetions minúsculo ou nulo, usamos o padrão do projeto para manter a escala
-    user_w = clip_data.get('bg_dimetions', {}).get('x') if clip_data.get('bg_dimetions') else None
-    user_h = clip_data.get('bg_dimetions', {}).get('y') if clip_data.get('bg_dimetions') else None
+    user_w = clip_data.get('bg_dimetions', {}).get('x')
+    user_h = clip_data.get('bg_dimetions', {}).get('y')
     
-    # Lógica de fallback: se for menor que 512, tratamos como um canvas de texto padrão para não achatar
     bw = int(user_w) if user_w and user_w > 511 else proj_w
     bh = int(user_h) if user_h and user_h > 100 else int(proj_h / 4)
     
-    # Criamos o canvas em alta resolução (x2) para garantir nitidez extrema
     render_w, render_h = bw * 2, bh * 2
     pil_img = Image.new('RGBA', (render_w, render_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(pil_img)
@@ -89,7 +139,6 @@ def generate_text_frame(clip_data, proj_w, proj_h):
     if bg_color and bg_color != 'transparent':
         draw.rectangle([0, 0, render_w, render_h], fill=bg_color)
     
-    # Multiplicador de fonte: ajustado para o supersampling (x2)
     f_size = int(clip_data.get('font_size') or 14) * 8
     font_path = clip_data.get('font')
     
@@ -110,7 +159,6 @@ def generate_text_frame(clip_data, proj_w, proj_h):
         text, font=font, fill=clip_data.get('font_color', '#ffffff')
     )
     
-    # Reduzimos para o tamanho de destino (bw, bh) para antialiasing natural
     cv2_img = np.array(pil_img)
     cv2_img = cv2.resize(cv2_img, (bw, bh), interpolation=cv2.INTER_AREA)
     return cv2_img
@@ -122,7 +170,6 @@ def process_video():
 
     project_path = data['project_path']
     PROJ_W, PROJ_H = data['project_dimensions']['width'], data['project_dimensions']['height']
-    # Mantemos a ordem inversa para que o Track 0/1 (topo) seja desenhado por último
     clips_data = sorted(data['clips'], key=lambda x: x.get('trackId', 0), reverse=True)
     loaded_clips = []
     
@@ -171,12 +218,10 @@ def process_video():
                 fw, fh = int(cw * scale_fit * zoom), int(ch * scale_fit * zoom)
 
             img_resized = cv2.resize(img_rgba, (max(1, fw), max(1, fh)), interpolation=cv2.INTER_LINEAR)
+            
             img_transformed = apply_3d_rotation(img_resized, rot['rot'], -rot['rot3d'])
             tw, th = img_transformed.shape[1], img_transformed.shape[0]
             
-            # ORIGEM NO CENTRO (Igual ao Three.js)
-            # PROJ_W/2 e PROJ_H/2 definem o centro. pos['x'] e pos['y'] deslocam a partir dali.
-            # tw/2 e th/2 garantem que a imagem seja desenhada a partir do seu próprio centro.
             x1 = int((PROJ_W / 2) + pos['x'] - (tw / 2))
             y1 = int((PROJ_H / 2) + pos['y'] - (th / 2))
 
