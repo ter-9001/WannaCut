@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Clip } from '../App';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Plus, 
@@ -13,8 +14,12 @@ import {
   Layers 
 } from 'lucide-react';
 
+
+
+
 interface ItensAsideProps {
   sidebarWidth: number;
+  typeofclip: string | null;
   isResizingSidebar: React.MutableRefObject<boolean>;
   handleImportFile: () => void;
   searchQuery: string;
@@ -26,6 +31,8 @@ interface ItensAsideProps {
   setInPoint: (val: number) => void;
   setOutPoint: (val: number) => void;
   setCurrentTime2: (val: number) => void;
+  handleDragStartEffect: (e: React.DragEvent, effectId: string, category: 'video' | 'audio') => void;
+  handleDragStartTransition: (e: React.DragEvent, transitionId: string) => void;
   handleDragStart: (e: any, ...args: any[]) => void;
   handleRenameAsset: (oldName: string, newName: string) => void;
   formatTime: (seconds: number) => string;
@@ -41,8 +48,37 @@ interface ItensAsideProps {
 
 }
 
+
+
+
+
+const VIDEO_EFFECTS = [
+  { id: 'camera_shake', label: 'Camera Shake' },
+  { id: 'chromatic_aberration', label: 'Chromatic Aberration' },
+  { id: 'film_grain', label: 'Film Grain & Dust' },
+  { id: 'blur', label: 'Blur' },
+  { id: 'glitch', label: 'Glitch' },
+];
+
+const AUDIO_EFFECTS = [
+  { id: 'microphone', label: 'Microfone' },
+  { id: 'alien', label: 'Alien' },
+  { id: 'pitch', label: 'Pitch' },
+];
+
+const TRANSITIONS_LIST = [
+  { id: 'smooth_push', label: 'Smooth Push' },
+  { id: 'rgb_split_glitch', label: 'RGB Split Glitch' },
+  { id: 'cube_flip', label: 'Cube Flip' },
+  { id: 'dissolve', label: 'Dissolve' },
+  { id: 'fade_out_in', label: 'Fade-out in' },
+];
+
+
+
 export const ItensAside = ({
   sidebarWidth,
+  typeofclip,
   isResizingSidebar,
   handleImportFile,
   searchQuery,
@@ -59,10 +95,14 @@ export const ItensAside = ({
   formatTime,
   availableFonts,
   loadSystemFonts,
-  handleDragStartText
+  handleDragStartText,
+  handleDragStartEffect,
+  handleDragStartTransition
   
 }: ItensAsideProps) => {
   const [activeTab, setActiveTab] = useState('Media');
+
+  
 
   const menuOptions = [
     { id: 'Media', icon: <Film size={20} />, label: 'Media', color: 'fuchsia' },
@@ -330,29 +370,95 @@ export const ItensAside = ({
         
         }
         
-        
-        
-        
-        
-        
-        
-        {
+        {activeTab === 'Effects' && (
+            <div className="flex-1 flex flex-col p-4 space-y-6 overflow-y-auto custom-scrollbar">
+              
+              
+              {/* Video Effects */}
 
-          (activeTab != 'Text' && activeTab != 'Media') &&
-          
-        (
-          /* Placeholder for others tabs */
-          <div className="flex-1 flex flex-col items-center justify-center p-10 text-center space-y-4">
-            <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center text-zinc-700">
-               {menuOptions.find(o => o.id === activeTab)?.icon}
+              { (typeofclip == 'video' || typeofclip == 'image') && (
+              <div>
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-purple-500 mb-4">
+                  Video Effects
+                </h3>
+                <div className="grid grid-cols-1 gap-2">
+                  {VIDEO_EFFECTS.map((eff) => (
+                    <motion.div
+                      key={eff.id}
+                      draggable
+                      onDragStart={(e) => handleDragStartEffect(e, eff.id, 'video')}
+                      className="group relative bg-purple-600/5 border border-purple-500/10 p-3 rounded-lg hover:border-purple-500/40 hover:bg-purple-600/10 cursor-grab active:cursor-grabbing transition-all"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Sparkles size={16} className="text-purple-400" />
+                        <p className="text-xs text-zinc-200 font-medium">{eff.label}</p>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              </div>)
+              
+            
+            }
+
+              {/* Audio Effects */}
+              { (typeofclip == 'video' || typeofclip == 'audio') && ( <div>
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-fuchsia-500 mb-4">
+                  Audio Effects
+                </h3>
+                <div className="grid grid-cols-1 gap-2">
+                  {AUDIO_EFFECTS.map((eff) => (
+                    <motion.div
+                      key={eff.id}
+                      draggable
+                      onDragStart={(e) => handleDragStartEffect(e, eff.id, 'audio')}
+                      className="group relative bg-fuchsia-600/5 border border-fuchsia-500/10 p-3 rounded-lg hover:border-fuchsia-500/40 hover:bg-fuchsia-600/10 cursor-grab active:cursor-grabbing transition-all"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Music size={16} className="text-fuchsia-400" />
+                        <p className="text-xs text-zinc-200 font-medium">{eff.label}</p>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              </div> 
+            )}
             </div>
-            <div className="space-y-1">
-              <h3 className="text-sm font-bold text-zinc-300 uppercase tracking-tighter">{activeTab} Section</h3>
-              <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-medium">Under construction in the engine</p>
+          )}
+
+          {activeTab === 'Transitions' && (
+            <div className="flex-1 flex flex-col p-4 space-y-4 overflow-y-auto custom-scrollbar">
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-500 mb-2">
+                Transitions Library
+              </h3>
+              <div className="grid grid-cols-1 gap-2">
+                {TRANSITIONS_LIST.map((trans) => (
+                  <motion.div
+                    key={trans.id}
+                    draggable
+                    onDragStart={(e) => handleDragStartTransition(e, trans.id)}
+                    className="group relative bg-blue-600/5 border border-blue-500/10 p-4 rounded-xl hover:border-blue-500/40 hover:bg-blue-600/10 cursor-grab active:cursor-grabbing transition-all border-dashed"
+                  >
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Layers size={20} className="text-blue-400 group-hover:scale-110 transition-transform" />
+                      <p className="text-[10px] text-zinc-300 font-bold uppercase tracking-tighter">
+                        {trans.label}
+                      </p>
+                    </div>
+                    
+                    {/* Visual Indicator of Overlap */}
+                    <div className="absolute bottom-1 left-1/2 -translate-x-1/2 w-8 h-1 bg-blue-500/20 rounded-full overflow-hidden">
+                      <div className="w-1/2 h-full bg-blue-500 mx-auto" />
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
             </div>
-          </div>
-        )
-        }
+          )}
+        
+        
+        
+        
       </div>
     </aside>
   );

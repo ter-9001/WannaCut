@@ -62,7 +62,8 @@ import {
   ChevronDown,
   Crosshair,
   ArrowBigUpDash,
-  ArrowUp
+  ArrowUp,
+  Underline
   
 } from 'lucide-react';
 
@@ -126,7 +127,7 @@ interface Font_Shine
   color?: string | null; //hexadecimal #ffffff
 }
 
-interface Clip {
+export interface Clip {
   id: string;
   name: string;
   start: number; // begin of the clip in relation the timeline
@@ -144,6 +145,8 @@ interface Clip {
   fadeoutAudio?: number;
   dimensions?: Position | null;
   scale?: number;
+  effects?: Object[];
+  transitions?: Object[];
   keyframes?: {
   volume?: Keyframe[];
   opacity?: Keyframe[];
@@ -3584,6 +3587,82 @@ const lockmuteTrack = (option: number, track: Tracks) => {
     };
   }, [isSetupOpen, currentProjectPath]);
 
+const handleDropOnClip = (e: React.DragEvent, targetClipId: string) => {
+  e.preventDefault();
+  
+  // 1. Tentar obter dados de Efeito ou Transição
+  const effectDataRaw = e.dataTransfer.getData('application/freecut-effect');
+  const transitionDataRaw = e.dataTransfer.getData('application/freecut-transition');
+
+  if (!effectDataRaw && !transitionDataRaw) return;
+
+  setClips(prevClips => prevClips.map(clip => {
+    if (clip.id !== targetClipId) return clip;
+
+    const updatedClip = { ...clip };
+
+    // Se for EFEITO
+    if (effectDataRaw) {
+      const data = JSON.parse(effectDataRaw);
+      if (!updatedClip.effects) updatedClip.effects = [];
+      
+      // Adiciona o novo efeito ao array
+      updatedClip.effects.push({
+        id: data.effectId,
+        category: data.category,
+        addedAt: Date.now() // útil para chaves únicas
+      });
+    }
+
+    // Se for TRANSIÇÃO
+    if (transitionDataRaw) {
+      const data = JSON.parse(transitionDataRaw);
+      if (!updatedClip.transitions) updatedClip.transitions = [];
+      
+      updatedClip.transitions.push({
+        id: data.transitionId,
+        duration: data.duration || 0.5
+      });
+    }
+
+    return updatedClip;
+  }));
+};
+
+
+const handleDragStartEffect = (
+  e: React.DragEvent, 
+  effectId: string, 
+  category: 'video' | 'audio'
+) => {
+  const effectData = {
+    type: 'effect',
+    effectId: effectId,
+    category: category, // 'video' or 'audio'
+  };
+
+  e.dataTransfer.setData('application/freecut-effect', JSON.stringify(effectData));
+  
+  e.dataTransfer.dropEffect = 'copy';
+  
+  console.log(`Dragging effect: ${effectId} (${category})`);
+};
+
+const handleDragStartTransition = (
+  e: React.DragEvent, 
+  transitionId: string
+) => {
+  const transitionData = {
+    type: 'transition',
+    transitionId: transitionId,
+    duration: 0.5, 
+  };
+
+  e.dataTransfer.setData('application/freecut-transition', JSON.stringify(transitionData));
+  e.dataTransfer.dropEffect = 'link';
+  console.log(`Dragging transition: ${transitionId}`);
+};
+
 
     const handleDragOver = (e: React.DragEvent) => {
       e.preventDefault();
@@ -3716,8 +3795,16 @@ const canvasRef2 = useRef<HTMLCanvasElement>(null);
 
 
 
+const knowTypeOfFirstSelectedClip = (): string | null => {
+  if (!clips || !selectedClipIds || selectedClipIds.length === 0) return null;
 
+  const selectedClip = clips.find(c => c.id === selectedClipIds[0]);
 
+  if (!selectedClip) return null;
+
+  
+  return knowTypeByAssetName(selectedClip.name);
+};
 
 
 const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) => 
@@ -3743,7 +3830,7 @@ const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) =>
       if(!type)
       {
         showNotify("Invalid file type: Only video, audio, text, effects and images are allowed", "error");
-        return
+        return null
       }
 
 
@@ -3788,6 +3875,8 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
   }
 
   const type = typeOriginal ? typeOriginal : knowTypeByAssetName(assetName, true);
+
+  if(type == null) return
 
 
   const dimensions = assets.find( a => a.name === assetName)?.dimensions || null
@@ -6121,6 +6210,9 @@ return (
           
           <ItensAside 
             sidebarWidth={sidebarWidth}
+            typeofclip = {knowTypeOfFirstSelectedClip() }
+            handleDragStartEffect={handleDragStartEffect}
+            handleDragStartTransition = {handleDragStartTransition}
             isResizingSidebar={isResizingSidebar}
             handleImportFile={handleImportFile}
             searchQuery={searchQuery}
@@ -6742,6 +6834,22 @@ return (
             return (
               <motion.div 
               key={clip.id} layoutId={clip.id}
+              onDragOver={(e) => {
+                e.preventDefault(); // Crítico: permite o drop
+                e.dataTransfer.dropEffect = 'copy';
+              }}
+              onDrop={(e) => {
+                const isEffect = e.dataTransfer.types.includes('application/freecut-effect');
+                const isTransition = e.dataTransfer.types.includes('application/freecut-transition');
+
+                if (isEffect || isTransition) {
+                  e.stopPropagation(); 
+                  
+                  handleDropOnClip(e, clip.id);
+                }
+                
+                
+              }}
               draggable="true"
               onContextMenu={(e) => handleContextMenu(e, assetTarget?.type, clip)}
               onDragStart={(e) => handleDragStart(e, clip.color, track.id, clip.duration, clip.name, true, clip.id)}
