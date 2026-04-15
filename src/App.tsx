@@ -852,7 +852,7 @@ const startExport = async () => {
     if(!currentProjectPath)
      return
 
-  const safeName = currentProjectPath.replace(/[^a-z0-0]/gi, '_').toLowerCase();
+  const safeName = currentProjectPath.replace(/[^a-z0-9]/gi, '_').toLowerCase();
 
   const targetPath = await save({
     title: 'Export Final Video',
@@ -1728,7 +1728,8 @@ const fetchFramesFromRust = async (time: number) => {
 
   const framePromises = activeClips.map(async (clip) => {
     const timelineRelativeTime = time - clip.start;
-    const clipTimeMs = (timelineRelativeTime + (clip.beginmoment || 0)) * 1000;
+    const assetRelativeTime = getAssetTimeAtTimelineTime(timelineRelativeTime, clip);
+    const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
     const path = `${currentProjectPath}/videos/${clip.name}`;
 
      if (clip.type === 'text') {
