@@ -303,7 +303,7 @@ const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
 const [availableFonts, setAvailableFonts] = useState<string[]>([]);
 
 const loadSystemFonts = async () => {
-    const fontsDir = `${localStorage.getItem("freecut_settings_folder")}/fonts`;
+    const fontsDir = `${localStorage.getItem("wannacut_settings_folder")}/fonts`;
 
 
     try {
@@ -438,7 +438,7 @@ const moveTrackDownAndShiftOthers = (targetTrackId: number) => {
 /* Part of settingsmodal */
 
 
-const [freecutSettings, setFreecutSettings] = useState({
+const [wannacutSettings, setwannacutSettings] = useState({
   workspace: '',
   gpu: null,
   shortcuts: ''
@@ -448,8 +448,8 @@ const [freecutSettings, setFreecutSettings] = useState({
 useEffect(() => {
   const checkConfig = async () => {
 
-    console.log('entrou em check configs',localStorage.getItem("freecut_settings_folder"))
-    const settingsFolder = localStorage.getItem("freecut_settings_folder");
+    console.log('entrou em check configs',localStorage.getItem("wannacut_settings_folder"))
+    const settingsFolder = localStorage.getItem("wannacut_settings_folder");
     
 
 
@@ -460,10 +460,10 @@ useEffect(() => {
       // Carrega o workspace do JSON para substituir o localStorage antigo
       try {
         const content = await invoke('read_settings_file', { 
-          path: `${settingsFolder}/freecut_settings.json` 
+          path: `${settingsFolder}/wannacut_settings.json` 
         }) as string;
         const parsed = JSON.parse(content);
-        setFreecutSettings(parsed);
+        setwannacutSettings(parsed);
         
         // Se o workspace estiver vazio, também precisamos alertar o usuário
         if (!parsed.workspace) {
@@ -476,7 +476,7 @@ useEffect(() => {
 
 
       } catch (e) {
-        console.error("Falha ao ler freecut_settings.json");
+        console.error("Falha ao ler wannacut_settings.json");
         setIsSettingsOpen(true);
          
       }
@@ -888,7 +888,7 @@ const startExport = async () => {
       let fontPath = c.font;
 
       if (c.type === 'text') {
-        const fontsDir = `${localStorage.getItem("freecut_settings_folder")}/fonts`;
+        const fontsDir = `${localStorage.getItem("wannacut_settings_folder")}/fonts`;
         try {
           const fontPaths = await invoke<string[]>('list_fonts', { fontsPath: fontsDir });
           
@@ -928,7 +928,7 @@ const startExport = async () => {
     await invoke('export_video', {
       projectPath: currentProjectPath,
       exportPath: targetPath,
-      freecutSettings: localStorage.getItem("freecut_settings_folder"),
+      wannacutSettings: localStorage.getItem("wannacut_settings_folder"),
       projectDimensions: { 
         width: projectConfig.width || 1920, // Corrigido de 1980 para 1920 (padrão HD)
         height: projectConfig.height || 1080 
@@ -3601,8 +3601,8 @@ const handleDropOnClip = (e: React.DragEvent, targetClipId: string) => {
   e.preventDefault();
   
   // 1. Pegamos os dados e limpamos IMEDIATAMENTE para evitar leituras duplas
-  const effectDataRaw = e.dataTransfer.getData('application/freecut-effect');
-  const transitionDataRaw = e.dataTransfer.getData('application/freecut-transition');
+  const effectDataRaw = e.dataTransfer.getData('application/wannacut-effect');
+  const transitionDataRaw = e.dataTransfer.getData('application/wannacut-transition');
 
   // Se já processamos ou se não há dados, saímos
   if (!effectDataRaw && !transitionDataRaw) return;
@@ -3614,6 +3614,8 @@ const handleDropOnClip = (e: React.DragEvent, targetClipId: string) => {
     return prevClips.map(clip => {
       if (clip.id !== targetClipId) return clip;
 
+      
+
       // Criamos uma cópia do clipe
       const updatedClip = { ...clip };
 
@@ -3622,7 +3624,20 @@ const handleDropOnClip = (e: React.DragEvent, targetClipId: string) => {
         try {
           const data = JSON.parse(effectDataRaw);
           const currentEffects = updatedClip.effects || [];
+
+
+          if(knowTypeByAssetName(clip.name) == 'image' && data.category == 'audio')
+          {
+            showNotify('Effect not availible for this type of clip','error')
+            return clip;
+          }
           
+          if(knowTypeByAssetName(clip.name) == 'audio' && data.category == 'video')
+          {
+            showNotify('Effect not availible for this type of clip','error')
+            return clip;
+          }
+
           // Evita adicionar exatamente o mesmo objeto no mesmo milissegundo
           updatedClip.effects = [
             ...currentEffects,
@@ -3664,8 +3679,8 @@ const handleDropOnClip_old = (e: React.DragEvent, targetClipId: string) => {
   e.preventDefault();
   
   // 1. Tentar obter dados de Efeito ou Transição
-  const effectDataRaw = e.dataTransfer.getData('application/freecut-effect');
-  const transitionDataRaw = e.dataTransfer.getData('application/freecut-transition');
+  const effectDataRaw = e.dataTransfer.getData('application/wannacut-effect');
+  const transitionDataRaw = e.dataTransfer.getData('application/wannacut-transition');
 
   if (!effectDataRaw && !transitionDataRaw) return;
 
@@ -3716,7 +3731,7 @@ const handleDragStartEffect = (
     category: category, // 'video' or 'audio'
   };
 
-  e.dataTransfer.setData('application/freecut-effect', JSON.stringify(effectData));
+  e.dataTransfer.setData('application/wannacut-effect', JSON.stringify(effectData));
   
   e.dataTransfer.dropEffect = 'copy';
   
@@ -3733,7 +3748,7 @@ const handleDragStartTransition = (
     duration: 0.5, 
   };
 
-  e.dataTransfer.setData('application/freecut-transition', JSON.stringify(transitionData));
+  e.dataTransfer.setData('application/wannacut-transition', JSON.stringify(transitionData));
   e.dataTransfer.dropEffect = 'link';
   console.log(`Dragging transition: ${transitionId}`);
 };
@@ -4409,6 +4424,10 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
 
 
   const loadProjects = async () => {
+
+    console.log('rootpath', rootPath)
+
+
     if (!rootPath) return;
     try {
       const list = await invoke('list_projects', { rootPath });
@@ -6187,11 +6206,11 @@ return (
         <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-8 bg-[#111]">
           <div className="flex items-center gap-4">
             <img 
-              src="logoFreeCut.png" 
-              alt="FreeCut Logo" 
+              src="logoWannaCut.png" 
+              alt="WannaCut Logo" 
               className="w-10 h-10 object-contain" // Mesmas dimensões do div antigo
             />
-            <h1 className="text-lg text-white"> Free<span className='font-bold'>Cut</span> <span className="text-zinc-500 font-light text-sm not-italic">MANAGER</span></h1>
+            <h1 className="text-lg text-white"> Wanna <span className='font-bold'>Cut</span> <span className="text-zinc-500 font-light text-sm not-italic">MANAGER</span></h1>
           </div>
           <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400" onClick={() => setIsSettingsOpen(true)}><Settings size={20} /></button>
         </header>
@@ -6921,8 +6940,8 @@ return (
                 e.dataTransfer.dropEffect = 'copy';
               }}
               onDrop={(e) => {
-                const isEffect = e.dataTransfer.types.includes('application/freecut-effect');
-                const isTransition = e.dataTransfer.types.includes('application/freecut-transition');
+                const isEffect = e.dataTransfer.types.includes('application/wannacut-effect');
+                const isTransition = e.dataTransfer.types.includes('application/wannacut-transition');
 
                 if (isEffect || isTransition) {
                   e.stopPropagation(); 

@@ -17,7 +17,7 @@ interface ProjectSettings {
   sampleRate: number;
 }
 
-interface FreeCutSettings {
+interface wannacutSettings {
   workspace: string;
   gpu: string | null;
   shortcuts: string;
@@ -40,11 +40,11 @@ export const SettingsModal: React.FC<Props> = ({
   isProjectLoaded,
   showNotify 
 }) => {
-  // Ajuste: Se não houver projeto, a aba inicial DEVE ser 'freecut' (System)
-  const [activeTab, setActiveTab] = useState(isProjectLoaded ? 'project' : 'freecut');
+  // Ajuste: Se não houver projeto, a aba inicial DEVE ser' (System)
+  const [activeTab, setActiveTab] = useState(isProjectLoaded ? 'project' : 'wannacut');
   
   const [projSettings, setProjSettings] = useState<ProjectSettings>(currentProjectSettings);
-  const [freeCutSettings, setFreeCutSettings] = useState<FreeCutSettings>({
+  const [wannacutSettings, setwannacutSettings] = useState<wannacutSettings>({
     workspace: '',
     gpu: null,
     shortcuts: ''
@@ -61,7 +61,7 @@ export const SettingsModal: React.FC<Props> = ({
   // Sincroniza a aba ativa caso o estado do projeto mude com o modal aberto
   useEffect(() => {
     if (!isProjectLoaded && (activeTab === 'project' || activeTab === 'history')) {
-      setActiveTab('freecut');
+      setActiveTab('wannacut');
     }
 
     if(isProjectLoaded)
@@ -71,7 +71,7 @@ export const SettingsModal: React.FC<Props> = ({
 
   useEffect(() => {
     if (isOpen) {
-      loadFreeCutSettings();
+      loadwannacutSettings();
       detectSystemGpus();
       // Atualiza o estado local com as settings atuais do projeto ao abrir
       setProjSettings(currentProjectSettings);
@@ -80,12 +80,12 @@ export const SettingsModal: React.FC<Props> = ({
 
 
 
-  const loadFreeCutSettings = async () => {
-    const configPath = localStorage.getItem("freecut_settings_folder");
+  const loadwannacutSettings = async () => {
+    const configPath = localStorage.getItem("wannacut_settings_folder");
     if (!configPath) return;
     try {
-      const content = await invoke('read_settings_file', { path: `${configPath}/freecut_settings.json` }) as string;
-      setFreeCutSettings(JSON.parse(content));
+      const content = await invoke('read_settings_file', { path: `${configPath}/wannacut_settings.json` }) as string;
+      setwannacutSettings(JSON.parse(content));
     } catch (err) { console.error(err); }
   };
 
@@ -96,11 +96,11 @@ export const SettingsModal: React.FC<Props> = ({
     } catch (e) { setDetectedGpus([]); }
   };
 
-  const saveFreeCutSettings = async (newSettings: FreeCutSettings) => {
-    const configPath = localStorage.getItem("freecut_settings_folder");
+  const savewannacutSettings = async (newSettings: wannacutSettings) => {
+    const configPath = localStorage.getItem("wannacut_settings_folder");
     if (!configPath) return;
     await invoke('save_settings_file', { 
-      path: `${configPath}/freecut_settings.json`, 
+      path: `${configPath}/wannacut_settings.json`, 
       content: JSON.stringify(newSettings, null, 2) 
     });
   };
@@ -110,8 +110,8 @@ export const SettingsModal: React.FC<Props> = ({
     const selectedBase = await open({ directory: true, multiple: false });
     
     if (selectedBase && typeof selectedBase === 'string') {
-      const subName = type === 'settings' ? 'freecut_settings' : 'project_freecut';
-      const oppositeName = type === 'settings' ? 'project_freecut' : 'freecut_settings';
+      const subName = type === 'settings' ? 'wannacut_settings' : 'project_wannacut';
+      const oppositeName = type === 'settings' ? 'project_wannacut' : 'wannacut_settings';
 
       if (selectedBase.includes(oppositeName)) {
         alert(`Hierarchy Error: You cannot select a location that contains or is within "${oppositeName}".`);
@@ -123,8 +123,8 @@ export const SettingsModal: React.FC<Props> = ({
         : `${selectedBase}/${subName}`;
 
       const oldPath = type === 'settings' 
-        ? localStorage.getItem("freecut_settings_folder") 
-        : freeCutSettings.workspace;
+        ? localStorage.getItem("wannacut_settings_folder") 
+        : wannacutSettings.workspace;
 
       if (oldPath && oldPath !== fullPath) {
         const confirmTransfer = window.confirm(
@@ -144,20 +144,20 @@ export const SettingsModal: React.FC<Props> = ({
 
       try {
         if (type === 'settings') {
-          localStorage.setItem("freecut_settings_folder", fullPath);
+          localStorage.setItem("wannacut_settings_folder", fullPath);
           
           await invoke('init_settings_structure', { path: fullPath });
 
-          await loadFreeCutSettings();
+          await loadwannacutSettings();
           
         } else {
-          const newS = { ...freeCutSettings, workspace: fullPath };
+          const newS = { ...wannacutSettings, workspace: fullPath };
           
           await invoke('init_workspace_structure', { path: fullPath }); 
           
-          setFreeCutSettings(newS);
+          setwannacutSettings(newS);
           
-          await saveFreeCutSettings(newS);
+          await savewannacutSettings(newS);
         }
         
         showNotify(`${type} successfully updated to: ${fullPath}`, 'success');
@@ -178,7 +178,7 @@ export const SettingsModal: React.FC<Props> = ({
   const allMenuOptions = [
     { id: 'project', icon: <Layout size={16} />, label: 'Project', color: 'text-blue-400', dependOfProject: true },
     { id: 'history', icon: <History size={16} />, label: 'History', color: 'text-purple-400', dependOfProject: true },
-    { id: 'freecut', icon: <Cpu size={16} />, label: 'System', color: 'text-cyan-400', dependOfProject: false },
+    { id: 'wannacut', icon: <Cpu size={16} />, label: 'System', color: 'text-cyan-400', dependOfProject: false },
   ];
 
   // Filtramos as opções que podem ser exibidas
@@ -218,7 +218,7 @@ export const SettingsModal: React.FC<Props> = ({
         <main className="flex-1 flex flex-col min-w-0">
           <header className="px-6 py-5 border-b border-white/5">
             <h2 className="text-[9px] font-black uppercase tracking-[0.4em] text-zinc-600">
-              FreeCut / <span className="text-zinc-200">{activeTab}</span>
+              wannacut / <span className="text-zinc-200">{activeTab}</span>
             </h2>
           </header>
 
@@ -307,7 +307,7 @@ export const SettingsModal: React.FC<Props> = ({
               </div>
             )}
 
-            {activeTab === 'freecut' && (
+            {activeTab === 'wannacut' && (
               <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
                 <section className="space-y-3">
                   <div className="flex items-center gap-2 text-cyan-500/70">
@@ -316,12 +316,12 @@ export const SettingsModal: React.FC<Props> = ({
                   </div>
                   <div className="p-4 rounded border border-white/5 bg-white/2 space-y-3">
                     <select 
-                      value={freeCutSettings.gpu || 'null'}
+                      value={wannacutSettings.gpu || 'null'}
                       onChange={(e) => {
                         const val = e.target.value === 'none' ? null : e.target.value;
-                        const newS = {...freeCutSettings, gpu: val};
-                        setFreeCutSettings(newS);
-                        saveFreeCutSettings(newS);
+                        const newS = {...wannacutSettings, gpu: val};
+                        setwannacutSettings(newS);
+                        savewannacutSettings(newS);
                       }}
                       className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs outline-none text-white"
                     >
@@ -334,7 +334,7 @@ export const SettingsModal: React.FC<Props> = ({
                     </select>
 
 
-                    {(!freeCutSettings.gpu || freeCutSettings.gpu ==  "null" ) && (
+                    {(!wannacutSettings.gpu || wannacutSettings.gpu ==  "null" ) && (
                           <div className="flex gap-3 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-500 text-[10px] leading-relaxed italic">
                             <AlertTriangle size={24} className="shrink-0" />
                             <p>Warning: Without hardware acceleration, advanced tools like "Background Removal" and "Vocal Extraction" will be disabled or significantly slower.</p>
@@ -347,14 +347,14 @@ export const SettingsModal: React.FC<Props> = ({
                   <div className="space-y-1.5">
                     <label className="text-zinc-600 text-[8px] font-bold uppercase italic">Settings Folder</label>
                     <button onClick={() => handleSelectFolder('settings')} className="w-full flex justify-between bg-white/2 border border-white/5 px-3 py-2 rounded text-[10px] hover:bg-white/5 transition-all text-zinc-400">
-                      <span className="truncate max-w-[180px]">{localStorage.getItem("freecut_settings_folder") || 'Set folder...'}</span>
+                      <span className="truncate max-w-[180px]">{localStorage.getItem("wannacut_settings_folder") || 'Set folder...'}</span>
                       <FolderEdit size={12} />
                     </button>
                   </div>
                   <div className="space-y-1.5">
                     <label className="text-zinc-600 text-[8px] font-bold uppercase italic">Workspace Root</label>
                     <button onClick={() => handleSelectFolder('workspace')} className="w-full flex justify-between bg-white/2 border border-white/5 px-3 py-2 rounded text-[10px] hover:bg-white/5 transition-all text-zinc-400">
-                      <span className="truncate max-w-[180px]">{freeCutSettings.workspace || 'Set workspace...'}</span>
+                      <span className="truncate max-w-[180px]">{wannacutSettings.workspace || 'Set workspace...'}</span>
                       <FolderEdit size={12} />
                     </button>
                   </div>

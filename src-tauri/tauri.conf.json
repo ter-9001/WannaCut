@@ -3,9 +3,9 @@
 
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "freecut",
+  "productName": "WannaCut",
   "version": "0.1.0",
-  "identifier": "com.freecut",
+  "identifier": "com.wannacut",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -15,7 +15,7 @@
   "app": {
     "windows": [
       {
-        "title": "FreeCut",
+        "title": "WannaCut",
         "width": 1920,
         "height": 1080,
         "dragDropEnabled": true
