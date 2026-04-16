@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Diamond, DiamondPlus, Video, Volume2, Type, Settings2, 
-  Wind, Layers, ChevronDown 
+  Wind, Layers, ChevronDown, Sparkles, X 
 } from 'lucide-react';
-import { number } from 'framer-motion';
+import { motion, AnimatePresence, number } from 'framer-motion';
 
 
 
@@ -63,142 +63,19 @@ interface PropertiesAsideProps {
   ) => any 
   knowTypeByAssetName: (name: string) => string;
   COLOR_MAP: Record<string, string>;
-  availableFonts: string []
+  availableFonts: string [];
+  removeEffectFromClip: void;
 }
 
-export const PropertiesAside = ({
-  selectedClipIds,
-  clips,
-  assets,
-  currentTime,
-  currentTimeRef,
-  setClips,
-  updateKeyframes,
-  getInterpolatedValueWithFades,
-  knowTypeByAssetName,
-  COLOR_MAP,
-  availableFonts
-}: PropertiesAsideProps) => {
-
-const COLOR_PALETTE: Record<string, string> = {
-  transparent: "transparent",
-  white: "#ffffff",
-  black: "#000000",
-  red: "#ff0000",
-  cyan: "#00ffff",
-  blue: "#0000ff",
-  green: "#00ff00",
-  yellow: "#ffff00",
-  magenta: "#ff00ff"
-};
-
-/**
- * Helper to resolve color input to hex
- */
-const resolveColor = (input: string): string => {
-  if (!input || input.toLowerCase() === 'transparent') return 'transparent';
-  const lowerInput = input.toLowerCase();
-  return COLOR_PALETTE[lowerInput] || (input.startsWith('#') ? input : '#ffffff');
-};
 
 
-  if (!selectedClipIds || selectedClipIds.length !== 1) return null;
 
-  const foundClip = clips.find(c => c.id === selectedClipIds[0]);
-  if (!foundClip) return null;
-
-  const assetnow = assets.find(a => a.name === foundClip.name);
-
-  const selectedClip = {
-    ...foundClip,
-    path: assetnow?.path,
-    type: foundClip.type ? foundClip.type : knowTypeByAssetName(foundClip.name)
-  };
-
-  if (!selectedClip.path && selectedClip.type != 'text') return null;
-
-  const activeHex = COLOR_MAP[selectedClip.color] || '#4f46e5';
-
-  const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v'];
-  const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'];
-  const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp'];
-
-  // 2. Função auxiliar para verificar a extensão (ignora maiúsculas/minúsculas)
-  const hasExtension = (path: string, extensions: string []) => 
-    path ? extensions.some(ext => path.toLowerCase().endsWith(ext)) : false;
-
-  // 3. Atribuição das constantes
-  const isVideo = selectedClip.type === "video" || hasExtension(selectedClip.path, VIDEO_EXTENSIONS);
-  const isAudio = selectedClip.type === "audio" || hasExtension(selectedClip.path, AUDIO_EXTENSIONS);
-  const isImage = selectedClip.type === "image" || hasExtension(selectedClip.path, IMAGE_EXTENSIONS);
-  const isText  = selectedClip.type === "text";
-
-
-  // Lógica de KeyframeNow (Volume, Opacity, etc)
-  const checkKeyframeNow = (prop: string) => {
-    const times = selectedClip.keyframes?.[prop]?.map((kf: any) => kf.time) || null;
-    return times?.some((kfTime: number) => 
-      Math.abs(kfTime - (currentTimeRef.current - selectedClip.start)) <= 0.05
-    ) || false;
-  };
-
-  const isZoomKNow = checkKeyframeNow('zoom');
-  const isVolumeKNow = checkKeyframeNow('volume');
-  const isOpacityKNow = checkKeyframeNow('opacity');
-
-  // 2. Defina os valores interpolados
-  const opacity = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'opacity');
-  const zoom = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'zoom');
-  const volume = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'volume');
-  const position = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'position') || { x: 0, y: 0 };
-  const rotation3d = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'rotation3d') || { rot: 0, rot3d: 0 };
-
-  // 3. Crie os estados editáveis (Use estes nos Inputs)
-  const opacState = useEditableValue(opacity, (v) => updateKeyframes(selectedClip, 'opacity', v));
-  const zoomState = useEditableValue(zoom, (v) => updateKeyframes(selectedClip, 'zoom', v));
-  const volumeState = useEditableValue(volume, (v) => updateKeyframes(selectedClip, 'volume', v));
-  const posXState = useEditableValue(position.x, (v) => updateKeyframes(selectedClip, 'position', { ...position, x: v }));
-  const posYState = useEditableValue(position.y, (v) => updateKeyframes(selectedClip, 'position', { ...position, y: v }));
-  const rot2dState = useEditableValue(rotation3d.rot, (v) => updateKeyframes(selectedClip, 'rotation3d', { ...rotation3d, rot: v }));
-  const rot3dState = useEditableValue(rotation3d.rot3d, (v) => updateKeyframes(selectedClip, 'rotation3d', { ...rotation3d, rot3d: v }));
- 
-  const fontSizeState = useEditableValue(selectedClip.font_size || 40, (v) => {
-      setClips(prev => prev.map(c => 
-        c.id === selectedClip.id ? { ...c, font_size: Math.round(v) } : c
-      ));
-    });
-
-    const bgDim = selectedClip.bg_dimetions || { x: 100, y: 100 };
-    const bgDimXState = useEditableValue(bgDim.x, (v) => 
-      setClips(prev => prev.map(c => c.id === selectedClip.id ? { ...c, bg_dimetions: { ...bgDim, x: v } } : c))
-    );
-    const bgDimYState = useEditableValue(bgDim.y, (v) => 
-      setClips(prev => prev.map(c => c.id === selectedClip.id ? { ...c, bg_dimetions: { ...bgDim, y: v } } : c))
-    );
- 
-  return (
-    
-    <aside className="w-72 bg-[#090909] border-l border-white/5 flex flex-col h-full overflow-hidden animate-in slide-in-from-right duration-300"
-    >
-      {/* Header */}
-      <div className="p-4 border-b border-white/5 flex items-center gap-3">
-        {/* Background do ícone com 15% de opacidade via Hex */}
-        <div 
-          className="p-2 rounded-lg" 
-          style={{ backgroundColor: `${activeHex}26` }}
-        >
-          {isVideo && <Video size={16} style={{ color: activeHex }} />}
-          {isAudio && <Volume2 size={16} style={{ color: activeHex }} />}
-          {isText && <Type size={16} style={{ color: activeHex }} />}
-        </div>
-        <div>
-          <h2 className="text-[11px] font-black uppercase tracking-widest text-white">Inspector</h2>
-          <p className="text-[9px] text-zinc-500 truncate w-40">{selectedClip.name || "Selected Clip"}</p>
-        </div>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6">
+// Seção de Ajustes Básicos (Transform, Opacity, etc.)
+const BasicSection = ({ clip, isVideo, isText, isAudio, isImage, activeHex, posXState, posYState, zoomState, isZoomKNow, updateKeyframes, selectedClip, availableFonts, 
+  fontSizeState, setClips, resolveColor, bgDimXState, bgDimYState, COLOR_PALETTE, opacState, isOpacityKNow, rot2dState, rot3dState, volumeState, isVolumeKNow
+ }) => (
+  <div className="space-y-4">
+    <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6">
         {/* SECTION: BASIC */}
         <section>
           <div className="flex items-center gap-2 mb-4" style={{ color: activeHex }}>
@@ -728,6 +605,380 @@ const resolveColor = (input: string): string => {
 
         )}
       </div>
+    <p className="text-[10px] text-zinc-500 uppercase font-bold px-4">Transform & Compositing</p>
+  </div>
+);
+
+// Seção de Gerenciamento de Efeitos Aplicados
+/**
+ * Componente interno para renderizar os controles específicos de cada efeito
+ */
+const EffectControl = ({ effect, onUpdate }) => {
+  // Helper para Sliders (Intensidade, Pitch, etc)
+  const renderSlider = (label: string, attr: string, min: number, max: number, step: number) => (
+    <div className="mt-3 space-y-1.5">
+      <div className="flex justify-between items-center px-1">
+        <label className="text-[9px] text-zinc-500 uppercase font-black tracking-widest">{label}</label>
+        <span className="text-[10px] text-violet-400 font-mono font-bold">
+          {typeof effect[attr] === 'number' ? effect[attr].toFixed(step < 1 ? 2 : 0) : '0'}
+        </span>
+      </div>
+      <input 
+        type="range" 
+        min={min} 
+        max={max} 
+        step={step}
+        value={effect[attr] ?? (min + max) / 2}
+        onChange={(e) => onUpdate({ [attr]: parseFloat(e.target.value) })}
+        className="w-full h-1.5 bg-black/40 rounded-lg appearance-none cursor-pointer accent-violet-500 hover:accent-violet-400 transition-all"
+      />
+    </div>
+  );
+
+  // Helper para Switches (Microphone, Alien)
+  const renderToggle = (label: string, attr: string) => (
+    <div className="mt-3 flex items-center justify-between bg-white/5 p-2 rounded-md border border-white/5">
+      <label className="text-[9px] text-zinc-400 uppercase font-black tracking-widest">{label}</label>
+      <button
+        onClick={() => onUpdate({ [attr]: !effect[attr] })}
+        className={`w-8 h-4 rounded-full transition-colors relative ${effect[attr] ? 'bg-violet-600' : 'bg-zinc-700'}`}
+      >
+        <div className={`absolute top-1 w-2 h-2 bg-white rounded-full transition-all ${effect[attr] ? 'left-5' : 'left-1'}`} />
+      </button>
+    </div>
+  );
+
+  // Mapeamento de interface por nome do efeito
+  switch (effect.name) {
+    case 'camera_shake':
+      return (
+        <>
+          {renderSlider('Vertical Intensity', 'vIntensity', 0, 50, 1)}
+          {renderSlider('Horizontal Intensity', 'hIntensity', 0, 50, 1)}
+        </>
+      );
+    case 'chromatic_aberration':
+    case 'blur':
+    case 'glitch':
+      return renderSlider('Intensity', 'intensity', 0, 100, 1);
+    case 'film_grain':
+      return renderSlider('Grain & Dust', 'intensity', 0, 1, 0.01);
+    case 'microphone':
+    case 'alien':
+      return renderToggle('Effect Active', 'active');
+    case 'pitch':
+      return renderSlider('Pitch (Semitones)', 'intensity', -24, 24, 1);
+    default:
+      return (
+        <div className="mt-2 text-[8px] text-zinc-600 uppercase italic">
+          No configurable parameters for this effect.
+        </div>
+      );
+  }
+};
+
+/**
+ * Seção Principal de Efeitos
+ */
+const EffectsSection = ({ clip, setClips, removeEffectFromClip }) => {
+  
+  // Função para atualizar os parâmetros de um efeito específico dentro do clipe
+  const updateEffectParams = (instanceId: string, newParams: any) => {
+    setClips((prev: any[]) => prev.map(c => {
+      if (c.id !== clip.id) return c;
+      return {
+        ...c,
+        effects: c.effects.map((eff: any) => 
+          eff.instanceId === instanceId ? { ...eff, ...newParams } : eff
+        )
+      };
+    }));
+  };
+
+  return (
+    <div className="p-4 space-y-4 select-none">
+      <div className="flex items-center justify-between">
+        <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-purple-500">
+          Applied Effects
+        </h3>
+        <div className="px-2 py-0.5 bg-purple-500/10 border border-purple-500/20 rounded text-[9px] font-bold text-purple-400">
+          {clip.effects?.length || 0}
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {clip.effects && clip.effects.length > 0 ? (
+          clip.effects.map((eff, index) => (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              key={eff.instanceId || index} 
+              className="bg-zinc-900/80 border border-white/5 rounded-xl p-4 shadow-xl"
+            >
+              {/* Header do Card de Efeito */}
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-lg ${eff.category === 'audio' ? 'bg-fuchsia-500/20' : 'bg-purple-500/20'}`}>
+                    <Sparkles size={14} className={eff.category === 'audio' ? 'text-fuchsia-400' : 'text-purple-400'} />
+                  </div>
+                  <div>
+                    <h4 className="text-[11px] font-black text-white uppercase tracking-tighter">
+                      {eff.name.replace(/_/g, ' ')}
+                    </h4>
+                    <span className="text-[8px] text-zinc-500 uppercase font-bold tracking-widest">
+                      {eff.category || 'Video'}
+                    </span>
+                  </div>
+                </div>
+
+                <button 
+                  onClick={() => removeEffectFromClip(clip.id, eff.id)}
+                  className="p-2 text-zinc-600 hover:text-red-500 hover:bg-red-500/10 rounded-full transition-all active:scale-90"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              {/* Área de Controles */}
+              <div className="pt-2 border-t border-white/5">
+                <EffectControl 
+                  effect={eff} 
+                  onUpdate={(params) => updateEffectParams(eff.instanceId, params)} 
+                />
+              </div>
+            </motion.div>
+          ))
+        ) : (
+          <div className="py-20 flex flex-col items-center justify-center border-2 border-dashed border-white/5 rounded-2xl opacity-30">
+            <Sparkles size={32} className="text-zinc-500 mb-3" />
+            <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">
+              Drag an effect onto the clip
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+// Seção de Configuração de Transições
+const TransitionsSection = ({ clip }) => (
+  <div className="p-4 space-y-4">
+    <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-500">Transition Settings</h3>
+    {clip.transitions && clip.transitions.length > 0 ? (
+       <div className="space-y-4">
+          {/* Lógica para editar duração da transição existente */}
+          <p className="text-[10px] text-zinc-400">Aqui entrarão os sliders de duração da transição.</p>
+       </div>
+    ) : (
+      <div className="py-10 text-center border-2 border-dashed border-white/5 rounded-xl">
+        <p className="text-[10px] text-zinc-600 uppercase font-bold">No transitions on this clip</p>
+      </div>
+    )}
+  </div>
+);
+
+export const PropertiesAside = ({
+  selectedClipIds,
+  clips,
+  assets,
+  currentTime,
+  currentTimeRef,
+  setClips,
+  updateKeyframes,
+  getInterpolatedValueWithFades,
+  knowTypeByAssetName,
+  COLOR_MAP,
+  availableFonts,
+  removeEffectFromClip
+}: PropertiesAsideProps) => {
+
+const COLOR_PALETTE: Record<string, string> = {
+  transparent: "transparent",
+  white: "#ffffff",
+  black: "#000000",
+  red: "#ff0000",
+  cyan: "#00ffff",
+  blue: "#0000ff",
+  green: "#00ff00",
+  yellow: "#ffff00",
+  magenta: "#ff00ff"
+};
+
+/**
+ * Helper to resolve color input to hex
+ */
+const resolveColor = (input: string): string => {
+  if (!input || input.toLowerCase() === 'transparent') return 'transparent';
+  const lowerInput = input.toLowerCase();
+  return COLOR_PALETTE[lowerInput] || (input.startsWith('#') ? input : '#ffffff');
+};
+
+
+  if (!selectedClipIds || selectedClipIds.length !== 1) return null;
+
+  const foundClip = clips.find(c => c.id === selectedClipIds[0]);
+  if (!foundClip) return null;
+
+  const assetnow = assets.find(a => a.name === foundClip.name);
+
+  const selectedClip = {
+    ...foundClip,
+    path: assetnow?.path,
+    type: foundClip.type ? foundClip.type : knowTypeByAssetName(foundClip.name)
+  };
+
+  if (!selectedClip.path && selectedClip.type != 'text') return null;
+
+  const activeHex = COLOR_MAP[selectedClip.color] || '#4f46e5';
+
+  const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v'];
+  const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'];
+  const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp'];
+
+  // 2. Função auxiliar para verificar a extensão (ignora maiúsculas/minúsculas)
+  const hasExtension = (path: string, extensions: string []) => 
+    path ? extensions.some(ext => path.toLowerCase().endsWith(ext)) : false;
+
+  // 3. Atribuição das constantes
+  const isVideo = selectedClip.type === "video" || hasExtension(selectedClip.path, VIDEO_EXTENSIONS);
+  const isAudio = selectedClip.type === "audio" || hasExtension(selectedClip.path, AUDIO_EXTENSIONS);
+  const isImage = selectedClip.type === "image" || hasExtension(selectedClip.path, IMAGE_EXTENSIONS);
+  const isText  = selectedClip.type === "text";
+
+
+  // Lógica de KeyframeNow (Volume, Opacity, etc)
+  const checkKeyframeNow = (prop: string) => {
+    const times = selectedClip.keyframes?.[prop]?.map((kf: any) => kf.time) || null;
+    return times?.some((kfTime: number) => 
+      Math.abs(kfTime - (currentTimeRef.current - selectedClip.start)) <= 0.05
+    ) || false;
+  };
+
+  const isZoomKNow = checkKeyframeNow('zoom');
+  const isVolumeKNow = checkKeyframeNow('volume');
+  const isOpacityKNow = checkKeyframeNow('opacity');
+
+  // 2. Defina os valores interpolados
+  const opacity = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'opacity');
+  const zoom = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'zoom');
+  const volume = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'volume');
+  const position = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'position') || { x: 0, y: 0 };
+  const rotation3d = getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'rotation3d') || { rot: 0, rot3d: 0 };
+
+  // 3. Crie os estados editáveis (Use estes nos Inputs)
+  const opacState = useEditableValue(opacity, (v) => updateKeyframes(selectedClip, 'opacity', v));
+  const zoomState = useEditableValue(zoom, (v) => updateKeyframes(selectedClip, 'zoom', v));
+  const volumeState = useEditableValue(volume, (v) => updateKeyframes(selectedClip, 'volume', v));
+  const posXState = useEditableValue(position.x, (v) => updateKeyframes(selectedClip, 'position', { ...position, x: v }));
+  const posYState = useEditableValue(position.y, (v) => updateKeyframes(selectedClip, 'position', { ...position, y: v }));
+  const rot2dState = useEditableValue(rotation3d.rot, (v) => updateKeyframes(selectedClip, 'rotation3d', { ...rotation3d, rot: v }));
+  const rot3dState = useEditableValue(rotation3d.rot3d, (v) => updateKeyframes(selectedClip, 'rotation3d', { ...rotation3d, rot3d: v }));
+ 
+  const fontSizeState = useEditableValue(selectedClip.font_size || 40, (v) => {
+      setClips(prev => prev.map(c => 
+        c.id === selectedClip.id ? { ...c, font_size: Math.round(v) } : c
+      ));
+    });
+
+    const bgDim = selectedClip.bg_dimetions || { x: 100, y: 100 };
+    const bgDimXState = useEditableValue(bgDim.x, (v) => 
+      setClips(prev => prev.map(c => c.id === selectedClip.id ? { ...c, bg_dimetions: { ...bgDim, x: v } } : c))
+    );
+    const bgDimYState = useEditableValue(bgDim.y, (v) => 
+      setClips(prev => prev.map(c => c.id === selectedClip.id ? { ...c, bg_dimetions: { ...bgDim, y: v } } : c))
+    );
+ 
+  const [activeTab, setActiveTab] = useState<'basic' | 'effects' | 'transitions'>('basic');
+
+  if (!selectedClip) return <div className="flex-1 bg-[#090909] border-l border-white/10" />;
+
+  const tabs = [
+    { id: 'basic', label: 'Basic' },
+    { id: 'effects', label: 'Effects' },
+    { id: 'transitions', label: 'Transitions' },
+  ];
+
+  return (
+    <aside className="flex flex-col h-full bg-[#090909] border-l border-white/10 overflow-hidden" style={{ width: 300 }}>
+      
+      {/* HEADER NAV HORIZONTAL */}
+      <div className="flex items-center px-2 pt-4 border-b border-white/5">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id as any)}
+            className="relative px-4 py-2 text-[11px] font-black uppercase tracking-tighter transition-colors"
+          >
+            <span className={activeTab === tab.id ? "text-white" : "text-zinc-500 hover:text-zinc-300"}>
+              {tab.label}
+            </span>
+            {activeTab === tab.id && (
+              <motion.div 
+                layoutId="activeTabUnderline"
+                className="absolute bottom-0 left-0 right-0 h-[2px] bg-violet-500"
+              />
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* CONTENT AREA COM SCROLL */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={activeTab}
+            initial={{ opacity: 0, x: 10 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -10 }}
+            transition={{ duration: 0.15 }}
+          >
+            {activeTab === 'basic' && (
+               <BasicSection 
+                 clip = {selectedClip}
+                 isVideo={isVideo}
+                  isText={isText}
+                  isImage={isImage}
+                  activeHex={activeHex}
+                  posXState={posXState}
+                  posYState={posYState}
+                  zoomState={zoomState}
+                  isZoomKNow={isZoomKNow}
+                  updateKeyframes={updateKeyframes}
+                  selectedClip={selectedClip}
+                  availableFonts={availableFonts}
+                  fontSizeState={fontSizeState}
+                  setClips={setClips}
+                  resolveColor={resolveColor}
+                  bgDimXState={bgDimXState}
+                  bgDimYState={bgDimYState}
+                  COLOR_PALETTE={COLOR_PALETTE}
+                  opacState = {opacState}
+                  isOpacityKNow = {isOpacityKNow}
+                  rot2dState = {rot2dState}
+                  rot3dState = {rot3dState}
+                  volumeState = {volumeState}
+                  isVolumeKNow = {isVolumeKNow}
+                  isAudio={isAudio}
+
+
+                
+
+                 
+               />
+            )}
+            {activeTab === 'effects' && <EffectsSection 
+               clip={selectedClip} 
+               removeEffectFromClip = {removeEffectFromClip}
+               setClips = {setClips}
+               
+               
+               
+               />}
+            {activeTab === 'transitions' && <TransitionsSection clip={selectedClip} />}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+
     </aside>
   );
 };

@@ -1,6 +1,6 @@
-# 🚀 FreeCut - Professional Open Source Video Editor
+# 🚀 WannaCut - Professional Open Source Video Editor
 
-**FreeCut** is a high-performance, lightweight video editor built for the modern creator. Combining the safety of **Rust** (Tauri) with the flexibility of **React**, it offers a professional-grade timeline experience without the bloat of traditional editors.
+**WannaCut** is a high-performance, lightweight video editor built for the modern creator. Combining the safety of **Rust** (Tauri) with the flexibility of **React**, it offers a professional-grade timeline experience without the bloat of traditional editors.
 
 **I am trying to creating the Free CapCut available even for Linux, MacOS and Windows. More complet than OpenCut:  So give a start to the project if you like.**  **I am accepting recommendations**
 
@@ -102,7 +102,7 @@ Bash
 
 ```
 # Clone the repository
-git clone https://github.com/seu-usuario/freecut.git
+git clone https://github.com/ter-9001/WannaCut
 
 # Install dependencies
 npm install
@@ -152,7 +152,7 @@ npm run tauri dev
 
 ## ⚖️ License
 
-FreeCut is open-source software licensed under the **GNU AGPLv3**.
+wannacut is open-source software licensed under the **GNU AGPLv3**.
 
 _Because creative tools should belong to everyone._
 

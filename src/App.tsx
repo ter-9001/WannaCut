@@ -329,7 +329,16 @@ const loadSystemFonts = async () => {
 //END OF LOAD FONTS
 
 
-
+const removeEffectFromClip = (clipId: string, effectId: number) => {
+  setClips(prevClips => prevClips.map(clip => {
+    if (clip.id !== clipId) return clip;
+    
+    // Filtra o array de efeitos removendo pelo índice
+    const updatedEffects = clip.effects?.filter((ef) => ef.id !== effectId);
+    
+    return { ...clip, effects: updatedEffects };
+  }));
+};
 
 
 const transferClipsToNewTrackZero = (targetTrackId: number) => {
@@ -3587,7 +3596,71 @@ const lockmuteTrack = (option: number, track: Tracks) => {
     };
   }, [isSetupOpen, currentProjectPath]);
 
+
 const handleDropOnClip = (e: React.DragEvent, targetClipId: string) => {
+  e.preventDefault();
+  
+  // 1. Pegamos os dados e limpamos IMEDIATAMENTE para evitar leituras duplas
+  const effectDataRaw = e.dataTransfer.getData('application/freecut-effect');
+  const transitionDataRaw = e.dataTransfer.getData('application/freecut-transition');
+
+  // Se já processamos ou se não há dados, saímos
+  if (!effectDataRaw && !transitionDataRaw) return;
+
+  // Limpa o dataTransfer para este evento
+  e.dataTransfer.clearData();
+
+  setClips(prevClips => {
+    return prevClips.map(clip => {
+      if (clip.id !== targetClipId) return clip;
+
+      // Criamos uma cópia do clipe
+      const updatedClip = { ...clip };
+
+      // Lógica para EFEITO
+      if (effectDataRaw) {
+        try {
+          const data = JSON.parse(effectDataRaw);
+          const currentEffects = updatedClip.effects || [];
+          
+          // Evita adicionar exatamente o mesmo objeto no mesmo milissegundo
+          updatedClip.effects = [
+            ...currentEffects,
+            { 
+              id: crypto.randomUUID(),
+              name: data.effectId, 
+              category: data.category,
+              instanceId: crypto.randomUUID() // Use um ID único para cada instância
+            }
+          ];
+        } catch (err) {
+          console.error("Erro ao processar drop de efeito:", err);
+        }
+      }
+
+      // Lógica para TRANSIÇÃO
+      if (transitionDataRaw) {
+        try {
+          const data = JSON.parse(transitionDataRaw);
+          const currentTransitions = updatedClip.transitions || [];
+          
+          updatedClip.transitions = [
+            ...currentTransitions,
+            {id:  crypto.randomUUID() ,name: data.transitionId, duration: data.duration || 0.5 }
+          ];
+        } catch (err) {
+          console.error("Erro ao processar drop de transição:", err);
+        }
+      }
+
+      return updatedClip;
+    });
+  });
+};
+
+
+
+const handleDropOnClip_old = (e: React.DragEvent, targetClipId: string) => {
   e.preventDefault();
   
   // 1. Tentar obter dados de Efeito ou Transição
@@ -3608,7 +3681,8 @@ const handleDropOnClip = (e: React.DragEvent, targetClipId: string) => {
       
       // Adiciona o novo efeito ao array
       updatedClip.effects.push({
-        id: data.effectId,
+        id: crypto.randomUUID(),
+        name: data.effectId,
         category: data.category,
         addedAt: Date.now() // útil para chaves únicas
       });
@@ -3620,7 +3694,8 @@ const handleDropOnClip = (e: React.DragEvent, targetClipId: string) => {
       if (!updatedClip.transitions) updatedClip.transitions = [];
       
       updatedClip.transitions.push({
-        id: data.transitionId,
+        id: crypto.randomUUID(),
+        name: data.transitionId,
         duration: data.duration || 0.5
       });
     }
@@ -6545,6 +6620,7 @@ return (
       knowTypeByAssetName={knowTypeByAssetName}
       COLOR_MAP={COLOR_MAP}
       availableFonts = {availableFonts}
+      removeEffectFromClip = {removeEffectFromClip}
     />
 
 
@@ -6827,12 +6903,18 @@ return (
             const currentFadeIn = isAudioOnly ? (clip.fadeinAudio || 0) : (clip.fadein || 0);
             const currentFadeOut = isAudioOnly ? (clip.fadeoutAudio || 0) : (clip.fadeout || 0);
 
+            
 
 
 
             
+
+
+            
             return (
-              <motion.div 
+
+
+            <motion.div 
               key={clip.id} layoutId={clip.id}
               onDragOver={(e) => {
                 e.preventDefault(); // Crítico: permite o drop
@@ -6847,6 +6929,8 @@ return (
                   
                   handleDropOnClip(e, clip.id);
                 }
+
+
                 
                 
               }}
@@ -6875,6 +6959,18 @@ return (
 
                //onDoubleClick={(e) =>{ e.stopPropagation(); }}
             >
+
+        {clip.effects?.length > 0 && (
+                    <div className="absolute bottom-0 left-0 right-0 h-[2px] flex gap-0.5 px-1">
+                      {clip.effects?.map((_, i) => (
+                        <div key={i} className="h-full flex-1 bg-purple-400 opacity-60 rounded-full" />
+                      ))}
+                    </div>
+            )}
+
+             
+
+              
 
             <AnimatePresence>
               {hoverKeyframe?.visible && (
@@ -7031,6 +7127,8 @@ return (
                   
 
               {/*Keyframes system */}
+
+              
 
 
           {clip.activeKeyframeView && (
@@ -7253,6 +7351,38 @@ return (
               {/* Handles de Redimensionamento */}
               <div className="absolute left-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'left')} />
               <div className="absolute right-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'right')} />
+
+
+              {/* --- VISUAL PRO LAYERS (EFEITOS) --- */}
+              {clip.effects && clip.effects.length > 0 && (
+                <div 
+                  className="absolute bottom-0 left-0 right-0 h-[4px] flex gap-[1px] px-[2px] z-[60] pointer-events-none"
+                >
+                  {clip.effects.map((eff, i) => (
+                    <div 
+                      key={`${clip.id}-eff-${i}`} 
+                      className={`h-full flex-1 rounded-full shadow-[0_0_5px_rgba(168,85,247,0.4)] ${
+                        eff.category === 'audio' ? 'bg-fuchsia-400' : 'bg-purple-400'
+                      }`}
+                      title={eff.name}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* --- VISUAL PRO LAYERS (TRANSIÇÕES) --- */}
+              {clip.transitions && clip.transitions.length > 0 && (
+                <>
+                  {/* Se tiver transição na entrada, uma barrinha azul na esquerda */}
+                  {clip.transitions.some(t => t.type === 'in' || !t.type) && (
+                    <div className="absolute left-0 top-1/4 bottom-1/4 w-[3px] bg-blue-500 shadow-[2px_0_8px_rgba(59,130,246,0.6)] z-[60] rounded-r-full pointer-events-none" />
+                  )}
+                </>
+              )}
+
+
+
+
             </motion.div>
           )})}
         </div>
