@@ -1,0 +1,3 @@
+[submodule "src-tauri/bin/core"]
+	path = src-tauri/bin/core
+	url = https://github.com/ter-9001/wannacut-core.git

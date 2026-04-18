@@ -68,6 +68,7 @@ import {
 } from 'lucide-react';
 
 import Waveform from "@/components/Waveform";
+import { getDrawFrameFunction, RenderEngineContext } from './renderBridge';
 import { SettingsModal } from './components/SettingsModal';
 import { PropertiesAside } from '@/components/PropertiesAside';
 import { ItensAside } from './components/ItensAside';
@@ -294,6 +295,19 @@ const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
   }
   selectedClipIdRef.current = null; // Clicou no vazio
 };
+
+// SYTEM FOR READ MOTORS
+
+const drawFrameEngine = useRef<any>(null);
+
+useEffect(() => {
+  const loadEngine = async () => {
+    const engine = await getDrawFrameFunction();
+    drawFrameEngine.current = engine;
+  };
+  loadEngine();
+}, []);
+
 
 
 
@@ -1723,559 +1737,25 @@ useEffect(() => {
 
 
 
-
-
-
-const fetchFramesFromRust = async (time: number) => {
-  // Garante que topClips existe
-  if (!topClips.current) return [];
-
-
-  const activeClips = topClips.current.reverse()
-
-
-
-  const framePromises = activeClips.map(async (clip) => {
-    const timelineRelativeTime = time - clip.start;
-    const clipTimeMs = (timelineRelativeTime + (clip.beginmoment || 0)) * 1000;
-    const path = `${currentProjectPath}/videos/${clip.name}`;
-
-     if (clip.type === 'text') {
-      return { id: clip.id, img: null, clip };
-    }
-
-    try {
-      const frameBase64 = await invoke('get_video_frame', { path, timeMs: clipTimeMs }) as string;
-      return new Promise<{id: string, img: HTMLImageElement, clip: any}>((resolve) => {
-        const img = new Image();
-        img.onload = () => resolve({ id: clip.id, img, clip });
-        img.src = frameBase64;
-      });
-    } catch (e) { return null; }
-  });
-
-  const results = await Promise.all(framePromises);
-  return results.filter((res): res is {id: string, img: HTMLImageElement, clip: any} => res !== null);
-};
-
-
-const syncClipsToScene = (loadedData: { id: string, img: HTMLImageElement | null, clip: any }[], time: number) => {
-  const scene = sceneRef.current;
-  if (!scene || !rendererRef.current) return;
-
-  const projW = projectConfig.width; 
-  const projH = projectConfig.height;
-  const projectAspect = projW / projH;
-
-  const loadedIds = new Set(loadedData.map(d => d.id));
+const newDrawFrame = async (time:number | null = null) => 
+{
   
-  // 1. LIMPEZA (GC)
-  groupsRef.current.forEach((group, id) => {
-    if (!loadedIds.has(id)) {
-      scene.remove(group);
-      const mesh = group.children[0] as THREE.Mesh;
-      if (mesh.material instanceof THREE.MeshBasicMaterial && mesh.material.map) {
-        mesh.material.map.dispose();
-      }
-      groupsRef.current.delete(id);
-    }
-  });
+  if (drawFrameEngine.current) {
 
-  // 2. RENDERIZAÇÃO
-  loadedData.forEach(({ id, img, clip }, index) => {
-    let group = groupsRef.current.get(id);
-    let mesh: THREE.Mesh;
-
-    if (!group) {
-      group = new THREE.Group();
-      const geometry = new THREE.PlaneGeometry(1, 1);
-      geometry.center(); 
-      const material = new THREE.MeshBasicMaterial({ 
-        transparent: true, 
-        side: THREE.DoubleSide,
-        depthWrite: false 
+      await drawFrameEngine.current({
+        time: time ? time : currentTime, // ou o tempo vindo do player
+        projectConfig,
+        currentProjectPath,
+        sceneRef,
+        rendererRef,
+        cameraRef,
+        topClips,
+        groupsRef,
+        getInterpolatedValueWithFades,
+        invoke
       });
-      mesh = new THREE.Mesh(geometry, material);
-      mesh.rotation.order = 'YXZ'; 
-      group.add(mesh);
-      scene.add(group);
-      groupsRef.current.set(id, group);
-    } else {
-      mesh = group.children[0] as THREE.Mesh;
     }
-
-    const mat = mesh.material as THREE.MeshBasicMaterial;
-    if (mat.map) mat.map.dispose();
-
-    // --- LÓGICA DE TEXTURA (RESTAURADA E MELHORADA) ---
-    if (clip.type === 'text') {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        // Mantemos o padrão de 1024x256 que você usava antes para o "size" não quebrar
-        canvas.width = 1024; 
-        canvas.height = 256;
-        
-        // Fundo (font_bgcolor)
-        const bgColor = clip.font_bgcolor || 'transparent';
-        if (bgColor !== 'transparent') {
-          ctx.fillStyle = bgColor;
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-
-        ctx.fillStyle = clip.font_color || 'white'; 
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        
-        const fontSize = clip.font_size || 14;
-        ctx.font = `${fontSize * 4}px "${clip.font}"`; 
-        
-        if (clip.font_shine && clip.font_shine.intensity > 0) {
-          ctx.shadowColor = clip.font_shine.color || 'white';
-          ctx.shadowBlur = clip.font_shine.size || 10;
-        }
-
-        ctx.fillText(clip.name, canvas.width / 2, canvas.height / 2);
-        
-        const textTexture = new THREE.CanvasTexture(canvas);
-        textTexture.colorSpace = THREE.SRGBColorSpace;
-        mat.map = textTexture;
-      }
-    } else if (img) {
-      const texture = new THREE.Texture(img);
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.needsUpdate = true;
-      mat.map = texture;
-    }
-
-    // --- INTERPOLAÇÃO (MANTIDA) ---
-    const rotationKfs = clip.keyframes?.rotation3d || [];
-    let rotationRaw = { rot: 0, rot3d: 0 };
-    if (rotationKfs.length > 0) {
-      const sortedKfs = [...rotationKfs].sort((a, b) => a.time - b.time);
-      const nextIdx = sortedKfs.findIndex(kf => kf.time > time);
-      if (nextIdx === -1) rotationRaw = sortedKfs[sortedKfs.length - 1].value;
-      else if (nextIdx === 0) rotationRaw = sortedKfs[0].value;
-      else {
-        const prev = sortedKfs[nextIdx - 1];
-        const next = sortedKfs[nextIdx];
-        const t = (time - prev.time) / (next.time - prev.time);
-        rotationRaw = {
-          rot: prev.value.rot + (next.value.rot - prev.value.rot) * t,
-          rot3d: prev.value.rot3d + (next.value.rot3d - prev.value.rot3d) * t
-        };
-      }
-    } else {
-      rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d') || { rot: 0, rot3d: 0 };
-    }
-
-    // --- DIMENSIONS & POSITIONING (RESTAURADO) ---
-    // Voltando para a lógica exata de clipW/clipH que você tinha antes
-    const clipW = clip.type === 'text' ? projW : (clip.dimensions?.x || (img ? img.width : projW));
-    const clipH = clip.type === 'text' ? projH / 4 : (clip.dimensions?.y || (img ? img.height : projH));
-    const clipAspect = clipW / clipH;
-
-    const isSameAspect = clip.type === 'text' ? false : Math.abs(clipAspect - projectAspect) < 0.01;
-
-    let finalW: number, finalH: number, finalPosX: number, finalPosY: number;
-
-    if (isSameAspect) {
-      finalW = projW; finalH = projH;
-      const zoomK = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-      const posK = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-      finalW *= zoomK; finalH *= zoomK;
-      finalPosX = posK.x; finalPosY = posK.y;
-    } else {
-      const zoomVal = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-      const posVal = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-      finalW = clipW * zoomVal;
-      finalH = clipH * zoomVal;
-
-      const ajustText = clip.type === 'text' ? 1 : 0;
-      // RESTAURADO: Offsets mágicos que mantêm a sincronia com o seu editor
-      finalPosX = posVal.x - 20;
-      finalPosY = posVal.y - 120 + (ajustText * (projH / 2));
-    }
-
-    // --- TRANSFORMS (MANTIDO) ---
-    let ajustcenter = (clip.dimensions?.x || finalW) / 5;
-    if (!rotationRaw.rot3d) ajustcenter = 0;
-    else if (rotationRaw.rot3d < 0) ajustcenter *= -1;
-
-    group.position.set(finalPosX + (finalW / 2) + ajustcenter, -(finalPosY + (finalH / 2)), index * 0.1);
-    group.rotation.z = THREE.MathUtils.degToRad(-(rotationRaw.rot ?? 0));
-    mesh.rotation.y = THREE.MathUtils.degToRad(rotationRaw.rot3d ?? 0);
-    mesh.scale.set(finalW, finalH, 1);
-
-    // --- BLENDING & OPACITY ---
-    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
-    mat.opacity = opacity;
-    const mode = (clip.blendmode || 'normal').toLowerCase();
-    mat.blending = THREE.NormalBlending;
-    if (mode === 'screen') {
-      mat.blending = THREE.CustomBlending;
-      mat.blendSrc = THREE.OneFactor;
-      mat.blendDst = THREE.OneMinusSrcColorFactor;
-    } else if (mode === 'add') mat.blending = THREE.AdditiveBlending;
-    else if (mode === 'multiply') mat.blending = THREE.MultiplyBlending;
-  });
-};
-
-const syncClipsToScene_old2 = (loadedData: { id: string, img: HTMLImageElement | null, clip: any }[], time: number) => {
-  const scene = sceneRef.current;
-  if (!scene || !rendererRef.current) return;
-
-  const projW = projectConfig.width; 
-  const projH = projectConfig.height;
-  const projectAspect = projW / projH;
-
-  const loadedIds = new Set(loadedData.map(d => d.id));
-  
-  // 1. LIMPEZA (GC)
-  groupsRef.current.forEach((group, id) => {
-    if (!loadedIds.has(id)) {
-      scene.remove(group);
-      const mesh = group.children[0] as THREE.Mesh;
-      if (mesh.material instanceof THREE.MeshBasicMaterial && mesh.material.map) {
-        mesh.material.map.dispose();
-      }
-      groupsRef.current.delete(id);
-    }
-  });
-
-  // 2. RENDERIZAÇÃO
-  loadedData.forEach(({ id, img, clip }, index) => {
-    let group = groupsRef.current.get(id);
-    let mesh: THREE.Mesh;
-
-    if (!group) {
-      group = new THREE.Group();
-      const geometry = new THREE.PlaneGeometry(1, 1);
-      geometry.center(); 
-      const material = new THREE.MeshBasicMaterial({ 
-        transparent: true, 
-        side: THREE.DoubleSide,
-        depthWrite: false 
-      });
-      mesh = new THREE.Mesh(geometry, material);
-      mesh.rotation.order = 'YXZ'; 
-      group.add(mesh);
-      scene.add(group);
-      groupsRef.current.set(id, group);
-    } else {
-      mesh = group.children[0] as THREE.Mesh;
-    }
-
-    // --- LÓGICA DE TEXTURA (Mídia vs Texto) ---
-    const mat = mesh.material as THREE.MeshBasicMaterial;
-    if (mat.map) mat.map.dispose();
-
-    if (clip.type === 'text') {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        // High-res canvas for text
-        canvas.width = 1024; 
-        canvas.height = 256;
-        
-        ctx.fillStyle = 'white'; 
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        
-        // Font & Size
-        const fontSize = clip.font_size || 14;
-        ctx.font = `${fontSize * 4}px "${clip.font}"`; 
-        
-        // Font Shine (Dynamic Glow)
-        if (clip.font_shine && clip.font_shine.intensity && clip.font_shine.intensity > 0) {
-          ctx.shadowColor = clip.font_shine.color || 'white';
-          ctx.shadowBlur = clip.font_shine.size || 10;
-        }
-
-        ctx.fillText(clip.name, canvas.width / 2, canvas.height / 2);
-        
-        const textTexture = new THREE.CanvasTexture(canvas);
-        textTexture.colorSpace = THREE.SRGBColorSpace;
-        mat.map = textTexture;
-      }
-    } else if (img) {
-      const texture = new THREE.Texture(img);
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.needsUpdate = true;
-      mat.map = texture;
-    }
-
-    // --- INTERPOLAÇÃO MANUAL DE ROTATION3D (Fixing the "Sudden Jump") ---
-    const rotationKfs = clip.keyframes?.rotation3d || [];
-    let rotationRaw = { rot: 0, rot3d: 0 };
-
-    if (rotationKfs.length > 0) {
-      const sortedKfs = [...rotationKfs].sort((a, b) => a.time - b.time);
-      const nextIdx = sortedKfs.findIndex(kf => kf.time > time);
-
-      if (nextIdx === -1) {
-        rotationRaw = sortedKfs[sortedKfs.length - 1].value;
-      } else if (nextIdx === 0) {
-        rotationRaw = sortedKfs[0].value;
-      } else {
-        const prev = sortedKfs[nextIdx - 1];
-        const next = sortedKfs[nextIdx];
-        const t = (time - prev.time) / (next.time - prev.time);
-        
-        rotationRaw = {
-          rot: prev.value.rot + (next.value.rot - prev.value.rot) * t,
-          rot3d: prev.value.rot3d + (next.value.rot3d - prev.value.rot3d) * t
-        };
-      }
-    } else {
-      rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d') || { rot: 0, rot3d: 0 };
-    }
-
-    // --- OUTRAS INTERPOLAÇÕES ---
-    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
-    const hasPositionKfs = clip.keyframes?.position && Object.keys(clip.keyframes.position).length > 0;
-    const hasZoomKfs = clip.keyframes?.zoom && Object.keys(clip.keyframes.zoom).length > 0;
-
-    // --- DIMENSIONS & POSITIONING ---
-    const clipW = clip.type === 'text' ? projW : (clip.dimensions?.x || (img ? img.width : projW));
-    const clipH = clip.type === 'text' ? projH / 4 : (clip.dimensions?.y || (img ? img.height : projH));
-    const clipAspect = clipW / clipH;
-
-    const isSameAspect = clip.type === 'text' ? false : Math.abs(clipAspect - projectAspect) < 0.01;
-
-    let finalW: number, finalH: number, finalPosX: number, finalPosY: number;
-
-    if (isSameAspect) {
-      finalW = projW; finalH = projH;
-      if (!hasPositionKfs && !hasZoomKfs) {
-        finalPosX = 0; finalPosY = 0;
-      } else {
-        const zoomK = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-        const posK = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-        finalW *= zoomK; finalH *= zoomK;
-        finalPosX = posK.x; finalPosY = posK.y;
-      }
-    } else {
-      const zoomVal = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-      const posVal = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-      finalW = clipW * zoomVal;
-      finalH = clipH * zoomVal;
-
-      const ajustText = clip.type === 'text' ? 1 : 0;
-      finalPosX = posVal.x - 20;
-      finalPosY = posVal.y - 120 + (ajustText * (projH / 2));
-    }
-
-    // --- FINAL TRANSFORMS ---
-    let ajustcenter = (clip.dimensions?.x || finalW) / 5;
-    if (rotationRaw.rot3d === 0 || !rotationRaw.rot3d) ajustcenter = 0;
-    else if (rotationRaw.rot3d < 0) ajustcenter *= -1;
-
-    group.position.set(finalPosX + (finalW / 2) + ajustcenter, -(finalPosY + (finalH / 2)), index * 0.1);
-    group.rotation.z = THREE.MathUtils.degToRad(-(rotationRaw.rot ?? 0));
-    mesh.rotation.y = THREE.MathUtils.degToRad(rotationRaw.rot3d ?? 0);
-    mesh.scale.set(finalW, finalH, 1);
-
-    // --- BLENDING & OPACITY ---
-    mat.opacity = opacity;
-    const mode = (clip.blendmode || 'normal').toLowerCase();
-    mat.blending = THREE.NormalBlending;
-
-    if (mode === 'screen') {
-      mat.blending = THREE.CustomBlending;
-      mat.blendSrc = THREE.OneFactor;
-      mat.blendDst = THREE.OneMinusSrcColorFactor;
-    } else if (mode === 'add') {
-      mat.blending = THREE.AdditiveBlending;
-    } else if (mode === 'multiply') {
-      mat.blending = THREE.MultiplyBlending;
-    }
-  });
-};
-
-
-
-const syncClipsToScene_old = (loadedData: { id: string, img: HTMLImageElement | null, clip: Clip }[], time: number) => {
-  const scene = sceneRef.current;
-  if (!scene || !rendererRef.current) return;
-
-
-
-
-  const projW = projectConfig.width; 
-  const projH = projectConfig.height;
-  const projectAspect = projW / projH;
-
-  const loadedIds = new Set(loadedData.map(d => d.id));
-  
-  // 1. LIMPEZA (GC)
-  groupsRef.current.forEach((group, id) => {
-    if (!loadedIds.has(id)) {
-      scene.remove(group);
-      const mesh = group.children[0] as THREE.Mesh;
-      if (mesh.material instanceof THREE.MeshBasicMaterial && mesh.material.map) {
-        mesh.material.map.dispose();
-      }
-      groupsRef.current.delete(id);
-    }
-  });
-
-  // 2. RENDERIZAÇÃO
-  loadedData.forEach(({ id, img, clip }, index) => {
-    let group = groupsRef.current.get(id);
-    let mesh: THREE.Mesh;
-
-    if (!group) {
-      group = new THREE.Group();
-      const geometry = new THREE.PlaneGeometry(1, 1);
-      geometry.center(); 
-      const material = new THREE.MeshBasicMaterial({ 
-        transparent: true, 
-        side: THREE.DoubleSide,
-        depthWrite: false 
-      });
-      mesh = new THREE.Mesh(geometry, material);
-      mesh.rotation.order = 'YXZ'; 
-      group.add(mesh);
-      scene.add(group);
-      groupsRef.current.set(id, group);
-    } else {
-      mesh = group.children[0] as THREE.Mesh;
-    }
-
-    // --- LÓGICA DE TEXTURA (Mídia vs Texto) ---
-    const mat = mesh.material as THREE.MeshBasicMaterial;
-    if (mat.map) mat.map.dispose();
-
-    if (clip.type === 'text') {
-      // Gerar textura de texto via Canvas
-
-      console.log('type text detect');
-
-
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        // Ajuste de resolução do texto (multiplicador para não pixelar)
-        canvas.width = 1024; 
-        canvas.height = 256;
-        
-        ctx.fillStyle = 'white'; // Cor padrão do texto
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        
-        // Aplica a fonte carregada do sistema
-        const fontSize = clip.font_size || 40;
-        ctx.font = `${fontSize * 4}px "${clip.font}"`; 
-        
-        // Efeito Shine (se configurado)
-        if (clip.font_shine && clip.font_shine.intensity && clip.font_shine.intensity > 0) {
-          ctx.shadowColor = clip.font_shine?.color || 'white';
-          ctx.shadowBlur = clip.font_shine?.size || 10;
-        }
-
-        ctx.fillText(clip.name, canvas.width / 2, canvas.height / 2);
-        
-        const textTexture = new THREE.CanvasTexture(canvas);
-        textTexture.colorSpace = THREE.SRGBColorSpace;
-        mat.map = textTexture;
-      }
-    } else if (img) {
-      // Textura normal de imagem/vídeo
-      const texture = new THREE.Texture(img);
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.needsUpdate = true;
-      mat.map = texture;
-    }
-
-    // --- INTERPOLAÇÃO E DIMENSÕES ---
-    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
-    const rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d') || { rot: 0, rot3d: 0 };
-    
-    const hasPositionKfs = clip.keyframes?.position && Object.keys(clip.keyframes.position).length > 0;
-    const hasZoomKfs = clip.keyframes?.zoom && Object.keys(clip.keyframes.zoom).length > 0;
-
-    // Para Texto, usamos as dimensões do canvas ou do clip. No seu caso, tratamos como 16:9 fixo ou auto-fill
-    const clipW = clip.type === 'text' ? projW : (clip.dimensions?.x || (img ? img.width : projW));
-    const clipH = clip.type === 'text' ? projH / 4 : (clip.dimensions?.y || (img ? img.height : projH));
-    const clipAspect = clipW / clipH;
-
-    const isSameAspect = clip.type === 'text' ? false : Math.abs(clipAspect - projectAspect) < 0.01;
-
-    let finalW: number, finalH: number, finalPosX: number, finalPosY: number;
-
-    if (isSameAspect) {
-      finalW = projW; finalH = projH;
-      if (!hasPositionKfs && !hasZoomKfs) {
-        finalPosX = 0; finalPosY = 0;
-      } else {
-        const zoomK = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-        const posK = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-        finalW *= zoomK; finalH *= zoomK;
-        
-        finalPosX = posK.x; 
-        finalPosY = posK.y;
-      }
-    } else {
-      const zoomVal = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
-      const posVal = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
-      finalW = clipW * zoomVal;
-      finalH = clipH * zoomVal;
-
-      //ajust for text
-      const ajustText = clip.type === 'text' ? 1 : 0
-
-      
-      finalPosX = posVal.x - 20 // + ajustText * (projW/2);
-      finalPosY = posVal.y - 120 + ajustText * (projH/2);
-    }
-
-    // --- AJUSTES FINAIS ---
-    let ajustcenter = (clip.dimensions?.x || finalW) / 5;
-    if (rotationRaw.rot3d === 0 || !rotationRaw.rot3d) ajustcenter = 0;
-    else if (rotationRaw.rot3d < 0) ajustcenter *= -1;
-    
-
-
-    group.position.set(finalPosX + (finalW / 2) + ajustcenter, -(finalPosY + (finalH / 2)), index * 0.1);
-    group.rotation.z = THREE.MathUtils.degToRad(-(rotationRaw.rot ?? 0));
-    mesh.rotation.y = THREE.MathUtils.degToRad(rotationRaw.rot3d ?? 0);
-    mesh.scale.set(finalW, finalH, 1);
-
-    // --- BLENDING ---
-    mat.opacity = opacity;
-    const mode = (clip.blendmode || 'normal').toLowerCase();
-    mat.blending = THREE.NormalBlending;
-
-    if (mode === 'screen') {
-      mat.blending = THREE.CustomBlending;
-      mat.blendSrc = THREE.OneFactor;
-      mat.blendDst = THREE.OneMinusSrcColorFactor;
-    } else if (mode === 'add') {
-      mat.blending = THREE.AdditiveBlending;
-    }
-  });
-};
-
-
-const drawFrame = async (time: number) => {
-  // Agora fazemos o check das Refs aqui
-  if (!rendererRef.current || !sceneRef.current || !cameraRef.current) {
-      console.warn("⚠️ Engine não inicializado ainda...");
-      return;
-  }
-
-  try {
-    const loadedData = await fetchFramesFromRust(time);
-    syncClipsToScene(loadedData, time);
-    console.log('ldata: ',loadedData)
-    rendererRef.current.render(sceneRef.current, cameraRef.current);
-  } catch (err) {
-    console.error("Erro no drawFrame:", err);
-  }
-};
-
-
+}
 
 
 
@@ -2291,7 +1771,7 @@ useEffect(() => {
 
     const now = performance.now();
     if (now - lastDrawTimeRef.current >= frameInterval) {
-      drawFrame(currentTime);
+      newDrawFrame()  
       lastDrawTimeRef.current = now; 
     }
   
@@ -2299,7 +1779,7 @@ useEffect(() => {
 
 
 
-}, [currentTime, clips]);
+}, [currentTime, clips, drawFrameEngine.current]);
 
 
 
@@ -3403,7 +2883,7 @@ const seekTo = (newTime: number) => {
     });
     // 4. If playback is paused, force a frame draw on the Canvas
     if (!isPlaying) {
-      drawFrame(newTime);
+      newDrawFrame(newTime);
      
     }
   };
@@ -3844,7 +3324,6 @@ const canvasRef2 = useRef<HTMLCanvasElement>(null);
     const togglePlay2 =  () => {
   if (!audioRef2.current) return;
 
-  console.log('entrou')
 
   try {
     if (audioRef2.current.paused) {
@@ -3900,6 +3379,8 @@ const knowTypeOfFirstSelectedClip = (): string | null => {
 const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) => 
 {
    const extension = assetName.split('.').pop()?.toLowerCase() || '';
+
+   
 
 
 
@@ -4837,7 +4318,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
 
   // --- CASE 1: DROP FROM SIDEBAR (New Assets or Fonts) ---
   if (!isTimelineClip) {
-    const assetName = e.dataTransfer.getData("assetName");
+    const assetName = e.dataTransfer.getData("assetName") || dragData.name;
     const fontPath = e.dataTransfer.getData("fontPath"); // From handleDragStartText
     
     // Determine type: check dragData first, then asset name
@@ -6357,7 +5838,7 @@ return (
         
         <audio 
           ref={audioRef2}
-          onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+          onTimeUpdate={(e) => setCurrentTime2(e.currentTarget.currentTime)}
           hidden
         />
 
@@ -6390,6 +5871,9 @@ return (
             id: crypto.randomUUID() // Novo ID para o subclip
           };
           e.dataTransfer.setData("application/json", JSON.stringify(subClip));
+
+          
+
           
         }}
         className="absolute inset-0 cursor-grab active:cursor-grabbing flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/40 transition-opacity"

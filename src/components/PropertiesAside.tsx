@@ -655,6 +655,8 @@ const EffectControl = ({ effect, onUpdate }) => {
         <>
           {renderSlider('Vertical Intensity', 'vIntensity', 0, 50, 1)}
           {renderSlider('Horizontal Intensity', 'hIntensity', 0, 50, 1)}
+          {renderSlider('Frequency', 'frequency', 0, 50, 1)}
+
         </>
       );
     case 'chromatic_aberration':
@@ -662,7 +664,7 @@ const EffectControl = ({ effect, onUpdate }) => {
     case 'glitch':
       return renderSlider('Intensity', 'intensity', 0, 100, 1);
     case 'film_grain':
-      return renderSlider('Grain & Dust', 'intensity', 0, 1, 0.01);
+      return renderSlider('Grain & Dust', 'intensity', 0, 100, 1);
     case 'microphone':
     case 'alien':
       return renderToggle('Effect Active', 'active');

@@ -288,7 +288,7 @@ async fn export_video(
     state: tauri::State<'_, ExportState>,
     project_path: String,
     export_path: String,
-    freecut_settings: String,
+    wannacut_settings: String,
     project_dimensions: serde_json::Value,
     clips: serde_json::Value,
 ) -> Result<(), String> {
@@ -298,7 +298,7 @@ async fn export_video(
 
     let config_data = serde_json::json!({
         "project_path": project_path,
-        "freecut_settings": freecut_settings,
+        "wannacut_settings": wannacut_settings,
         "export_path": export_path,
         "project_dimensions": project_dimensions,
         "clips": clips
@@ -732,9 +732,30 @@ use opencv::{prelude::*, videoio, core, imgcodecs};
 use base64::{engine::general_purpose, Engine as _};
 
 #[tauri::command]
+async fn get_image_data(path: String) -> Result<String, String> {
+    use std::fs;
+    
+    // Lê os bytes brutos da imagem
+    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+    
+    // Converte para Base64 (estou assumindo que você usa a crate base64)
+    use base64::{Engine as _, engine::general_purpose};
+    let b64 = general_purpose::STANDARD.encode(bytes);
+    
+    // Detecta a extensão para o MIME type correto
+    let mime = if path.to_lowercase().ends_with(".png") { "image/png" } else { "image/jpeg" };
+    
+    Ok(format!("data:{};base64,{}", mime, b64))
+}
+
+#[tauri::command]
 async fn get_video_frame(path: String, time_ms: f64) -> Result<String, String> {
+    
+    
+    
     let mut cam = videoio::VideoCapture::from_file(&path, videoio::CAP_ANY)
         .map_err(|e| e.to_string())?;
+    
     
     // Move the video seek pointer to the desired millisecond
     cam.set(videoio::CAP_PROP_POS_MSEC, time_ms).map_err(|e| e.to_string())?;
@@ -1036,7 +1057,8 @@ fn main() {
             init_settings_structure,
             init_workspace_structure,
             transfer_folder_content,
-            list_fonts
+            list_fonts,
+            get_image_data
            
         ])
         .run(tauri::generate_context!())

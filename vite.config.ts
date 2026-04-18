@@ -35,5 +35,11 @@ export default defineConfig(async () => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    fs: {
+      allow: [
+        '.', // Permite a raiz do projeto
+        'src-tauri/bin/core' // Permite especificamente sua pasta secreta
+      ]
+    }
   },
 }));
