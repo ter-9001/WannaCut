@@ -16,6 +16,7 @@
     "fs:allow-stat",
     "core:webview:default",
     "fs:allow-appdata-read-recursive",
+    
     {
       "identifier": "fs:scope",
       "allow": [

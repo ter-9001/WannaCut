@@ -41,7 +41,6 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "bin/ffmpeg",
       "bin/exporter"
 
     ]

@@ -55,9 +55,13 @@ interface ItensAsideProps {
 const VIDEO_EFFECTS = [
   { id: 'camera_shake', label: 'Camera Shake' },
   { id: 'chromatic_aberration', label: 'Chromatic Aberration' },
-  { id: 'film_grain', label: 'Film Grain & Dust' },
+  { id: 'film_grain', label: 'Film Grain' },
+  { id: 'film_grain_dust', label: 'Film Grain and Dust' },
   { id: 'blur', label: 'Blur' },
-  { id: 'glitch', label: 'Glitch' },
+  { id: 'glitch_flash', label: 'Glitch Flash' },
+  { id: 'glitch_rgb', label: 'Glitch RGB' }
+
+
 ];
 
 const AUDIO_EFFECTS = [

@@ -252,6 +252,16 @@ export default function App() {
   const lastMousePosRef = useRef({ x: 0, y: 0 });
   const canvasCursor = interactionMode === 'transform' ? 'move' : 'pointer';
 
+
+
+//Variables for effects
+
+const settingsFolder = localStorage.getItem("wannacut_settings_folder");
+
+
+
+
+
 // Fechar menu ao clicar fora
 useEffect(() => {
   const closeMenu = () => setShowContextMenu(null);
@@ -1126,224 +1136,9 @@ const reverterVolume = (db: number): number =>
    return value
 }
 
-useEffect(() => {
-  if (!topAudios || topAudios.length === 0 || !isPlaying) {
-    audioPlayersRef.current.forEach(p => {
-      p.pause();
-      p.volume = 0;
-    });
-    return;
-  }
-
-  const currentIds = new Set(topAudios.map(clip => clip.id));
-  audioPlayersRef.current.forEach((player, id) => {
-    if (!currentIds.has(id)) {
-      player.pause();
-      audioPlayersRef.current.delete(id);
-    }
-  });
-
-  const keyframeToLinear = (kfValue: number) => {
-    const db = (kfValue * 100) - 30;
-    return Math.pow(10, db / 20);
-  };
-
-  // Função Auxiliar: Calcula em qual segundo do arquivo original o áudio deve estar
-  const getAssetTimeAtTimelineTime = (tTime: number, clip: Clip) => {
-    if (!clip.keyframes?.speed || clip.keyframes.speed.length === 0) return tTime;
-    const speedKfs = [...clip.keyframes.speed].sort((a, b) => a.time - b.time);
-    let accumulatedAssetTime = 0;
-    let lastT = 0;
-    let lastS = speedKfs[0].value;
-
-    for (const kf of speedKfs) {
-      if (tTime > kf.time) {
-        const dt = kf.time - lastT;
-        const avgS = (lastS + kf.value) / 2;
-        accumulatedAssetTime += dt * avgS;
-        lastT = kf.time;
-        lastS = kf.value;
-      } else {
-        const dt = tTime - lastT;
-        const dist = kf.time - lastT || 1;
-        const currentS = lastS + (dt / dist) * (kf.value - lastS);
-        accumulatedAssetTime += dt * ((lastS + currentS) / 2);
-        return accumulatedAssetTime;
-      }
-    }
-    return accumulatedAssetTime + (tTime - lastT) * lastS;
-  };
-
-  topAudios.forEach(clip => {
-    let player = audioPlayersRef.current.get(clip.id);
-    
-    const audio = `${clip.name.split('.').slice(0, -1).join('.')}.mp3`;
-    const path = knowTypeByAssetName(clip.name) === 'video' 
-      ? `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/extracted_audios/${audio}`)}` 
-      : `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`;
-
-    if (!player) {
-      player = new Audio(path);
-      // Opcional: mantém o tom original (sem voz de esquilo) ao mudar velocidade
-      // player.preservesPitch = true; 
-      audioPlayersRef.current.set(clip.id, player);
-    }
-
-    const timelineRelativeTime = currentTimeRef.current - clip.start;
-    // Calcula o tempo distorcido pela velocidade para o áudio original
-    const assetRelativeTime = getAssetTimeAtTimelineTime(timelineRelativeTime, clip);
-    const targetTime = assetRelativeTime + (clip.beginmoment || 0);
-
-    const applyFadeAndSync = () => {
-      // Sincronia inicial
-      if (targetTime >= 0 && targetTime < player!.duration) {
-        player!.currentTime = targetTime;
-      }
-      
-      if (isPlaying) player!.play().catch(() => {});
-
-      const updateAudioState = () => {
-        if (!player || player.paused) return;
-
-        // 1. SPEED UPDATE (PlaybackRate)
-        const currentSpeed = getInterpolatedValueWithFades(currentTimeRef.current, clip, 'speed');
-        // O HTML5 Audio suporta playbackRate entre 0.06 e 16.0
-        player.playbackRate = Math.max(0.06, Math.min(16, currentSpeed));
-
-        //2. VOLUME CALCULATION
-        const relativeTime = player.currentTime - (clip.beginmoment || 0);
-        const fadein = clip.fadeinAudio || 0;
-        const fadeout = clip.fadeoutAudio || 0;
-        
-        let fadeVol = 1.0;
-        if (relativeTime < fadein && fadein > 0) {
-          fadeVol = relativeTime / fadein;
-        } else if (relativeTime > (clip.duration - fadeout) && fadeout > 0) {
-          const timeRemaining = clip.duration - relativeTime;
-          fadeVol = timeRemaining / fadeout;
-        }
-
-        const kfValue = getInterpolatedValueWithFades(currentTimeRef.current, clip, 'volume');
-        const kfLinear = keyframeToLinear(kfValue);
-        player.volume = Math.max(0, Math.min(1, kfLinear * fadeVol));
-
-      // 3. DRIFT CHECK (Forced Sync)
-      // If the audio deviates by more than 0.1s from what the integral calculates, we force the timing.
-      
-      const expectedTime = getAssetTimeAtTimelineTime(currentTimeRef.current - clip.start, clip) + (clip.beginmoment || 0);
-        if (Math.abs(player.currentTime - expectedTime) > 0.1) {
-           player.currentTime = expectedTime;
-        }
-        
-        if (isPlaying) requestAnimationFrame(updateAudioState);
-      };
-
-      updateAudioState();
-    };
-
-    if (player.readyState >= 1) { 
-      applyFadeAndSync();
-    } else {
-      player.addEventListener('loadedmetadata', applyFadeAndSync, { once: true });
-    }
-  });
-
-}, [topAudios, isPlaying]);
 
 
 
-/*
-useEffect(() => {
-  if (!topAudios || topAudios.length === 0 || !isPlaying) {
-    audioPlayersRef.current.forEach(p => {
-      p.pause();
-      p.volume = 0;
-    });
-    return;
-  }
-
-  const currentIds = new Set(topAudios.map(clip => clip.id));
-  audioPlayersRef.current.forEach((player, id) => {
-    if (!currentIds.has(id)) {
-      player.pause();
-      audioPlayersRef.current.delete(id);
-    }
-  });
-
-  // Função para converter o valor do Keyframe (0 a 1) para Ganho Linear via dB
-  // Mapeamos 0.0 (KF) -> -50dB e 1.0 (KF) -> +50dB
-  const keyframeToLinear = (kfValue) => {
-    const db = (kfValue * 100) - 50; // Transforma 0...1 em -50...50
-    // Fórmula: VolumeLinear = 10^(db / 20)
-    const linear = Math.pow(10, db / 20);
-    return linear;
-  };
-
-  topAudios.forEach(clip => {
-    let player = audioPlayersRef.current.get(clip.id);
-    
-    const audio = `${clip.name.split('.').slice(0, -1).join('.')}.mp3`;
-    const path = knowTypeByAssetName(clip.name) === 'video' 
-      ? `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/extracted_audios/${audio}`)}` 
-      : `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`;
-
-    if (!player) {
-      player = new Audio(path);
-      audioPlayersRef.current.set(clip.id, player);
-    }
-
-    const targetTime = (currentTimeRef.current - clip.start) + (clip.beginmoment || 0);
-
-    const applyFadeAndSync = () => {
-      if (targetTime >= 0 && targetTime < player!.duration) {
-        player!.currentTime = targetTime;
-      }
-      
-      if (isPlaying) player!.play().catch(() => {});
-
-      const updateVolume = () => {
-        if (!player || player.paused) return;
-
-        const relativeTime = player.currentTime - (clip.beginmoment || 0);
-        const fadein = clip.fadeinAudio || 0;
-        const fadeout = clip.fadeoutAudio || 0;
-        
-        // 1. Cálculo do Fade (Linear 0 a 1)
-        let fadeVol = 1.0;
-        if (relativeTime < fadein && fadein > 0) {
-          fadeVol = relativeTime / fadein;
-        } else if (relativeTime > (clip.duration - fadeout) && fadeout > 0) {
-          const timeRemaining = clip.duration - relativeTime;
-          fadeVol = timeRemaining / fadeout;
-
-        }
-
-        // 2. Cálculo do Keyframe (Convertendo dB para Linear)
-        const kfValue = getInterpolatedValueWithFades(currentTimeRef.current, clip, 'volume');
-        const kfLinear = keyframeToLinear(kfValue);
-
-        // 3. Volume Final
-        // Como o player.volume morre em 1.0, limitamos aqui para o preview não quebrar.
-        // No Export (FFmpeg), o valor kfLinear completo será usado.
-        const combinedVol = kfLinear;
-        player.volume = Math.max(0, Math.min(1, combinedVol));
-        
-        if (isPlaying) requestAnimationFrame(updateVolume);
-      };
-
-      updateVolume();
-    };
-
-    if (player.readyState >= 1) { 
-      applyFadeAndSync();
-    } else {
-      player.addEventListener('loadedmetadata', applyFadeAndSync, { once: true });
-    }
-  });
-
-}, [topAudios, isPlaying]);
-
-*/
 
 const getInterpolatedValue = (time: number, keyframes: Keyframe[]): number => {
   // 1. Se não houver keyframes, retorna o valor padrão (meio da escala = 0dB)
@@ -1737,11 +1532,12 @@ useEffect(() => {
 
 
 
-const newDrawFrame = async (time:number | null = null) => 
+const newDrawFrame = async (time:number | null = null, audios: any| null = null) => 
 {
   
   if (drawFrameEngine.current) {
 
+    
       await drawFrameEngine.current({
         time: time ? time : currentTime, // ou o tempo vindo do player
         projectConfig,
@@ -1752,10 +1548,25 @@ const newDrawFrame = async (time:number | null = null) =>
         topClips,
         groupsRef,
         getInterpolatedValueWithFades,
-        invoke
+        invoke,
+        settingsFolder,
+        topAudios: audios ? audios : topAudios, 
+        isPlaying
+        
       });
     }
 }
+
+
+useEffect( () => {
+
+   
+
+    newDrawFrame(currentTime, topAudios)
+
+
+
+}, [topAudios, isPlaying]);
 
 
 
@@ -3482,8 +3293,8 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
             id: crypto.randomUUID(),
             name: type ==='text' ? 'Text' : assetName,
             start: dropTime,
-            duration: deleteClip ? deleteClip.duration : 10,
-            originalduration: originalduration,
+            duration: deleteClip ? deleteClip.duration : duration ? duration : 10,
+            originalduration: duration,
             color: getRandomColor(),
             trackId: newTrackId,
             maxduration: duration,
@@ -3496,6 +3307,8 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
             font_shine: type === 'text' ? { size: 0, intensity: 0, color: null } : null,
             font_color: '#ffffff' 
           };
+
+          
 
 
           setClips(prevClips => {
@@ -4296,6 +4109,9 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   e.preventDefault();
   e.stopPropagation();
 
+
+ 
+
   const targetTrack = tracks.find(t => t.id === trackId);
   if (targetTrack?.lock === true) return;
 
@@ -4331,6 +4147,8 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     
     // Setup durations: Text is effectively infinite, Media follows asset duration
     const defaultDuration = whatType === 'text' ? 5 : (assetNow ? Math.min(assetNow.duration, 10) : 5);
+
+
     const totalMaxDuration = whatType === 'text' ? 3600 : (assetNow ? assetNow.duration : 10);
 
     const isBusy = isSpaceOccupied(trackId, dropTime, defaultDuration, null);
@@ -4431,222 +4249,6 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   setDeleteClipId(null);
 };
  
-const handleDropOnTimeline_old = (e: React.DragEvent, trackId: number) => {
-  e.preventDefault();
-  e.stopPropagation();
-
-
-
-  if(tracks.find(t => t.id === trackId)?.lock === true) return
-
-
- 
-
-  
-  const previousTrackRaw = e.dataTransfer.getData("previousTrackId");
-  const previousTrack = previousTrackRaw ? Number(previousTrackRaw) : null;
-
-  const previousColor = e.dataTransfer.getData("previousColor");
-
-  //const clickOffset = parseFloat(e.dataTransfer.getData("clickOffset") || "0");
-
-  const isTimelineClip = e.dataTransfer.getData("isTimelineClip") === "true";
-  const anchorStart = parseFloat(e.dataTransfer.getData("anchorStart") || "0");
-  
-  // Take offset
-  const clickOffset = parseFloat(e.dataTransfer.getData("clickOffset") || "0");
-  
-  const rect = e.currentTarget.getBoundingClientRect();
-  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-  
-  // 1. Mouse position convert to time
-  const mouseTime = (e.clientX - rect.left + 0) / pixelsPerSecond;
-  
-  // 2. The actual drop time is the mouse minus where "grabbed" the clip.
-  const rawDropTime = mouseTime - clickOffset; 
-  
-  const dropTime = getSnappedTime(rawDropTime, deleteClipId, trackId);
-
-
-  const data = e.dataTransfer.getData("application/json") || null;
-  
-  //if its a subclip
-
-  if (data)
-  {
-
-    console.log('data on')
-
-    
-      const droppedClip = JSON.parse(data);
-
-      console.log('dropped clip', droppedClip)
-
-      
-      // 1. Try to find the corresponding asset.
-      const assetNow = assets.find(a => a.name === droppedClip.name);
-
-
-      console.log('assetNow di', assetNow?.dimensions)
-      
-      // 2. Set the default duration safely.
-      // If assetNow exists and is greater than 10, use 10. Otherwise, use its duration or 5 (total fallback).
-      const defaultDuration = assetNow ? Math.min(assetNow.duration, 10) : 10;
-      const totalMaxDuration = assetNow ? assetNow.duration : 10;
-
-      const isBusy = (isSpaceOccupied(trackId, dropTime, droppedClip.duration, null))
-      const whatType = knowTypeByAssetName(droppedClip.name ,true);
-      const isNotType = tracks.find( t => t.id === trackId)?.type !== whatType
-      
-      
-      if(!isBusy && !isNotType)
-      {
-          const newClip: Clip = {
-            id: crypto.randomUUID(), 
-            name: droppedClip.name,
-            start: dropTime,
-            duration: droppedClip.duration,
-            originalduration: droppedClip.duration,
-            color: getRandomColor(),
-            trackId: trackId,
-            maxduration: totalMaxDuration,
-            beginmoment: droppedClip.beginmoment,
-            dimensions: assetNow?.dimensions ? assetNow?.dimensions : null,
-            scale: 1,
-            type: whatType,
-            font: (whatType == 'text' ) ? 'SofiaRoughBlackInline' :  null,
-            font_size: (whatType == 'text' ) ? 14 :  null,
-            font_shine: null
-
-          };
-
-          setClips(prev => [...prev, newClip]);
-          setDeleteClipId(null);
-      }
-      else
-      {
-          createClipOnNewTrack(droppedClip.name, dropTime, droppedClip.beginmoment)
-          
-
-      }
-      
-      
-      return
-  }
-
-  
-
-
-
-
-  const assetName = e.dataTransfer.getData("assetName");
-
-
-  saveHistory(clips, assets, tracks);
-
-  if (isTimelineClip && selectedClipIds.length > 0) {
-  const timeOffset = dropTime - anchorStart;
-  const anchorClip = clips.find(c => c.id === deleteClipId);
-  const trackOffset = anchorClip ? trackId - anchorClip.trackId : 0;
-
-  // 1. Clips that are NOT in the selection (remain paused)
-  const otherClips = clips.filter(c => !selectedClipIds.includes(c.id));
-  
-  // 2. We calculate the new position of all selected players.
-  const tracksid = tracks.map( t => t.id)
-  let maxTrackId = Math.max(...tracksid, trackId);
-  
-  const finalMovedClips = clips
-    .filter(c => selectedClipIds.includes(c.id))
-    .map(clip => {
-      let targetTrack = Math.max(0, clip.trackId + trackOffset);
-      const targetStart = Math.max(0, clip.start + timeOffset);
-
-      const trackChoose = tracks.find( t => t.id === targetTrack)
-
-      //If there is a collision, we move the vehicle to a track above the existing ones.
-      if (isSpaceOccupied(targetTrack, targetStart, clip.duration, clip.id) || trackChoose?.type !==  knowTypeByAssetName(clip.name,true)) {
-        maxTrackId++;
-        targetTrack = maxTrackId;
-      }
-
-      return {
-        ...clip,
-        start: targetStart,
-        trackId: targetTrack,
-        color: clip.trackId == targetTrack ? clip.color : getRandomColor()
-      };
-    });
-
-  // 3. ONE-TIME UPDATE: Merges the still clips with the newly moved ones
-  setClips([...otherClips, ...finalMovedClips]);
-  
-  //4. Ensures that the 'tracks' state knows about the new track if it has been created.
-  if (maxTrackId > Math.max(...tracksid)) {
-    //setTracks(prev => [...new Set([...prev, maxTrackId])].sort((a,b) => a-b)); old logic
-    
-    const newTracksCreated = finalMovedClips.map(fc => ({
-      id: fc.trackId,
-      type: knowTypeByAssetName(fc.name, true) as 'video' | 'audio' | 'effects'
-    }));
-
-    setTracks(prev => {
-      const allTracks = [...prev, ...newTracksCreated];
-      // Remove duplicates by comparing the actual ID
-      const uniqueTracks = allTracks.filter((track, index, self) =>
-        index === self.findIndex((t) => t.id === track.id)
-      );
-      return uniqueTracks.sort((a, b) => a.id - b.id);
-    });
-  }
-} else {
-    // (Asset -> Timeline) 
-    const assetName = e.dataTransfer.getData("assetName");
-    //if no have space useeffect with comment 'avoid clip over another'
-    // 1. Try to find the corresponding asset.
-    const assetNow = assets.find(a => a.name === assetName);
-    
-    // 2. Set the default duration safely.
-    // If assetNow exists and is greater than 10, use 10. Otherwise, use its duration or 5 (total fallback).
-    const defaultDuration = assetNow ? Math.min(assetNow.duration, 10) : 10;
-    const totalMaxDuration = assetNow ? assetNow.duration : 10;
-
-    const isBusy = (isSpaceOccupied(trackId, dropTime, Math.min(defaultDuration, 10), null))
-    const isNotType = tracks.find( t => t.id === trackId)?.type !== knowTypeByAssetName(assetName,true)
- 
-          
-
-    
-    if(!isBusy && !isNotType)
-    {
-       const newClip: Clip = {
-          id: crypto.randomUUID(), 
-          name: assetName,
-          start: dropTime,
-          duration: defaultDuration,
-          originalduration: defaultDuration,
-          color: getRandomColor(),
-          trackId: trackId,
-          maxduration: totalMaxDuration,
-          beginmoment: 0,
-          dimensions: assetNow?.dimensions ? assetNow?.dimensions : null,
-          scale: 1
-        };
-
-        setClips(prev => [...prev, newClip]);
-        setDeleteClipId(null);
-    }
-    else
-    {
-        createClipOnNewTrack(assetName, dropTime)
-        return
-
-    }
-  }
-
-  setDeleteClipId(null);
-};
-
 
 const filteredAssets = assets.filter(asset => 
   asset.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -4812,100 +4414,6 @@ const syncKeyframesToSpeedCurve = (clip: Clip) => {
   );
 };
 
-const syncKeyframesToSpeedCurve_new = (clip: Clip) => {
-  // --- CASO: KEYFRAMES DE SPEED FORAM EXCLUÍDOS ---
-  if (!clip.keyframes?.speed || clip.keyframes.speed.length === 0) {
-    setClips((prevClips) =>
-      prevClips.map((c) => {
-        if (c.id === clip.id) {
-          const updatedKfs = { ...c.keyframes };
-          const typesToRemap: (keyof NonNullable<Clip['keyframes']>)[] = ['volume', 'opacity', 'rotation3d'];
-
-          typesToRemap.forEach((type) => {
-            if (updatedKfs[type]) {
-              updatedKfs[type] = updatedKfs[type]!.map((kf) => {
-                /**
-                 * LÓGICA DE RESET:
-                 * Se a velocidade agora é constante (1.0x), o tempo na timeline
-                 * deve ser exatamente o "Asset Time" que o keyframe representava.
-                 * Usamos a proporção baseada na duração que o clipe tinha antes de resetar.
-                 */
-                const ratio = kf.time / (c.duration || 1);
-                const resetTime = ratio * (c.originalduration || c.maxduration || c.duration);
-
-                return {
-                  ...kf,
-                  time: resetTime
-                };
-              });
-            }
-          });
-
-          return { 
-            ...c, 
-            duration: c.originalduration || c.maxduration || c.duration,
-            keyframes: updatedKfs 
-          };
-        }
-        return c;
-      })
-    );
-    return;
-  }
-
-  // --- CASO: EXISTEM KEYFRAMES DE SPEED (Sua lógica atual) ---
-  const speedKfs = [...clip.keyframes.speed].sort((a, b) => a.time - b.time);
-
-  const mapAssetTimeToTimeline = (targetAssetTime: number): number => {
-    let currentAssetTime = 0;
-    let currentTimelineTime = 0;
-
-    for (let i = 0; i < speedKfs.length - 1; i++) {
-      const start = speedKfs[i];
-      const end = speedKfs[i + 1];
-      const segmentTimelineDuration = end.time - start.time;
-      const avgSpeed = (start.value + end.value) / 2;
-      const segmentAssetDuration = segmentTimelineDuration * avgSpeed;
-
-      if (currentAssetTime + segmentAssetDuration >= targetAssetTime) {
-        const remainingAssetTime = targetAssetTime - currentAssetTime;
-        return currentTimelineTime + (remainingAssetTime / avgSpeed);
-      }
-      currentAssetTime += segmentAssetDuration;
-      currentTimelineTime += segmentTimelineDuration;
-    }
-    const lastSpeed = speedKfs[speedKfs.length - 1].value;
-    return currentTimelineTime + (targetAssetTime - currentAssetTime) / lastSpeed;
-  };
-
-  setClips((prevClips) =>
-    prevClips.map((c) => {
-      if (c.id === clip.id) {
-        const updatedKfs = { ...c.keyframes };
-        const typesToRemap: (keyof NonNullable<Clip['keyframes']>)[] = ['volume', 'opacity', 'rotation3d'];
-
-        typesToRemap.forEach((type) => {
-          if (updatedKfs[type]) {
-            updatedKfs[type] = updatedKfs[type]!.map((kf) => {
-                // Aqui você deve usar o cálculo de Asset Time que discutimos antes 
-                // para evitar que os pontos fiquem "presos"
-                const ratio = kf.time / (c.duration || 1);
-                const assetTime = ratio * (c.originalduration || c.maxduration);
-                
-                return {
-                  ...kf,
-                  time: mapAssetTimeToTimeline(assetTime), 
-                }
-            });
-          }
-        });
-
-        return { ...c, keyframes: updatedKfs };
-      }
-      return c;
-    })
-  );
-};
 
 
 const updateClipDurationBySpeed = (clip: Clip) => {
@@ -5343,91 +4851,6 @@ const updateKeyframes = (
   }
 };
 
-const updateKeyframes_old = (
-  clip: Clip, 
-  type: 'opacity' | 'volume' | 'speed' | 'position' | 'rotation3d' | 'zoom', 
-  newValue: number | { x?: number, y?: number, z?: number }
-) => {
-  const threshold = 0.05;
-  const relativeTime = currentTimeRef.current - clip.start;
-  const safeKeyframes = clip.keyframes || {};
-  const currentTypeArray = [...(safeKeyframes[type] || [])];
-
-  // 1. Define o valor padrão baseado no tipo
-  const getDefaultValue = () => {
-    switch (type) {
-      case 'position': return { x: 0, y: 0 };
-      case 'rotation3d': return { x: 0, y: 0 }; // x = rot, y = rot3d
-      case 'zoom': return 1.0;
-      case 'speed': return 1.0;
-      case 'opacity': return 1.0;
-      default: return 0;
-    }
-  };
-
-  // 2. Função para mesclar valores (Merge)
-  const getUpdatedValue = (oldValue: any) => {
-    if (typeof newValue === 'object' && newValue !== null) {
-      const base = oldValue || getDefaultValue();
-      return { ...base, ...newValue };
-    }
-    return newValue;
-  };
-
-  let updatedTypeArray: Keyframe[];
-
-  // LÓGICA DE ATUALIZAÇÃO DA TRACK
-  
-  // CASO 0: Track vazia - Cria o primeiro keyframe no tempo 0
-  // CASO 0: Inicialização
-  if ((currentTypeArray.length === 0) && (clip.activeKeyframeView !== type)) {
-    updatedTypeArray = [{
-      id: crypto.randomUUID(),
-      time: 0,
-      value: getUpdatedValue(type === 'position' ? { x: 0, y: 0 } : type === 'rotation3d' ? { x: 0, y: 0} : 1)
-    }];
-  }
-  // CASO 1: Ajuste Global (Apenas 1 KF e o usuário não está no modo "animação" de KFs)
-  else if (currentTypeArray.length === 1 && clip.activeKeyframeView !== type) {
-    updatedTypeArray = [{
-      ...currentTypeArray[0],
-      value: getUpdatedValue(currentTypeArray[0].value)
-    }];
-  } 
-  // CASO 2: Modo Animação (Múltiplos KFs ou gravando no tempo atual)
-  else {
-    const existingIndex = currentTypeArray.findIndex(
-      (kf) => Math.abs(kf.time - relativeTime) <= threshold
-    );
-
-    if (existingIndex !== -1) {
-      // Atualiza KF existente
-      updatedTypeArray = currentTypeArray.map((kf, index) =>
-        index === existingIndex ? { ...kf, value: getUpdatedValue(kf.value) } : kf
-      );
-    } else {
-      // Cria novo KF no tempo atual
-      const newKeyframe = {
-        id: crypto.randomUUID(),
-        time: relativeTime,
-        value: getUpdatedValue(null),
-      };
-      updatedTypeArray = [...currentTypeArray, newKeyframe].sort((a, b) => a.time - b.time);
-    }
-  }
-
-  // 3. Persistência
-  const updatedKeyframes = { ...safeKeyframes, [type]: updatedTypeArray };
-
-  setClips((prev) =>
-    prev.map((c) => c.id === clip.id ? { ...c, keyframes: updatedKeyframes } : c)
-  );
-
-  // Gatilhos específicos
-  if (type === 'speed') {
-    handleSpeedKeyframeChange({ ...clip, keyframes: updatedKeyframes });
-  }
-};
 
 
 
@@ -5491,61 +4914,6 @@ const addKeyframe = (e: React.MouseEvent, clipId: string) => {
   });
 };
 
-const addKeyframe_old = (e: React.MouseEvent, clipId: string) => {
-  const clip = clips.find(c => c.id === clipId);
-  // Só adiciona se houver uma visão de keyframe ativa (ex: 'volume')
-  if (!clip || !clip.activeKeyframeView) return;
-
-  const rect = e.currentTarget.getBoundingClientRect();
-  const clickX = e.clientX - rect.left;
-  const clickY = e.clientY - rect.top;
-
-  const time = clickX / pixelsPerSecond;
-  // Inverte o Y: clique no topo = 1.0 (100%), clique na base = 0.0 (0%)
-  let value = Math.max(0, Math.min(1, 1 - (clickY / rect.height)));
-
-  console.log(value)
-
-  setClips(prev => prev.map(c => {
-    if (c.id !== clipId) return c;
-    
-    const view = c.activeKeyframeView as keyof NonNullable<Clip['keyframes']>;
-
-
-   if( view == 'speed')
-        value = converterSpeed(value)
-
-
-
-
-    const currentKfs = c.keyframes?.[view] || [];
-
-    // Se já houver um ponto muito perto no tempo, não cria outro
-    if (currentKfs.some(k => Math.abs(k.time - time) < 0.05)) return c;
-
-    console.log('valor a ser mandado', value, view)
-    const newKeyframe: Keyframe = {
-      id: crypto.randomUUID(),
-      time: time,
-      value: value
-    };
-
-    return {
-      ...c,
-      keyframes: {
-        ...c.keyframes,
-        [view]: [...currentKfs, newKeyframe].sort((a, b) => a.time - b.time)
-      }
-    };
-  }));
-
-
-  if( clip.activeKeyframeView == 'speed')
-     handleSpeedKeyframeChange(clip)
-
-  
-
-};
 
 {/* Função auxiliar para calcular o Y em pixels baseado na altura do clipe (ex: 40px) */}
 const calculateY = (value: number, height: number, type:string = '') => {

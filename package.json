@@ -22,7 +22,8 @@
     "lucide-react": "^0.563.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "three": "^0.183.2"
+    "three": "^0.183.2",
+    "tone": "^15.1.22"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
