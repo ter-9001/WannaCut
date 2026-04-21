@@ -63,11 +63,13 @@ import {
   Crosshair,
   ArrowBigUpDash,
   ArrowUp,
-  Underline
+  Underline,
+  Bell
   
 } from 'lucide-react';
 
 import Waveform from "@/components/Waveform";
+import Notifications, { NotificationsRef } from './components/Notification';
 import { getDrawFrameFunction, RenderEngineContext } from './renderBridge';
 import { SettingsModal } from './components/SettingsModal';
 import { PropertiesAside } from '@/components/PropertiesAside';
@@ -259,6 +261,13 @@ export default function App() {
 const settingsFolder = localStorage.getItem("wannacut_settings_folder");
 
 
+const [hasNewMessages, setHasNewMessages] = useState(false);
+const notifyRef = useRef<NotificationsRef>(null); // A Ref que você já tem
+
+
+
+
+
 
 
 
@@ -334,7 +343,7 @@ const loadSystemFonts = async () => {
         const fontPaths = await invoke<string[]>('list_fonts', { fontsPath: fontsDir });
         setAvailableFonts(fontPaths);
 
-        console.log('fontPaths', fontPaths)
+        
 
         // Criar @font-face dinamicsoft
         fontPaths.forEach(path => {
@@ -1080,8 +1089,11 @@ const updateAudio = () => {
   const idsAtuais = topAudios?.map(c => c.id).join(',');
   const idsNovos = winner?.map(c => c.id).join(',');
 
-  if (idsAtuais !== idsNovos) {
+
     setTopAudios(winner);
+
+  if (idsAtuais !== idsNovos) {
+    //setTopAudios(winner);
     console.log('winner is ', winner)
   }
 
@@ -1532,6 +1544,7 @@ useEffect(() => {
 
 
 
+
 const newDrawFrame = async (time:number | null = null, audios: any| null = null) => 
 {
   
@@ -1554,19 +1567,17 @@ const newDrawFrame = async (time:number | null = null, audios: any| null = null)
         isPlaying
         
       });
-    }
-}
 
+    }
+
+}
 
 useEffect( () => {
 
-   
+   newDrawFrame()
 
-    newDrawFrame(currentTime, topAudios)
+}, [isPlaying])
 
-
-
-}, [topAudios, isPlaying]);
 
 
 
@@ -2416,7 +2427,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
           data: JSON.stringify(projectData),
           timestamp: Date.now()
         });
-        console.log("Project saved successfully.");
+       // console.log("Project saved successfully.");
         
       } catch (err) {
         console.error("Auto-save failed:", err);
@@ -3026,7 +3037,7 @@ const handleDragStartEffect = (
   
   e.dataTransfer.dropEffect = 'copy';
   
-  console.log(`Dragging effect: ${effectId} (${category})`);
+  //console.log(`Dragging effect: ${effectId} (${category})`);
 };
 
 const handleDragStartTransition = (
@@ -3041,7 +3052,7 @@ const handleDragStartTransition = (
 
   e.dataTransfer.setData('application/wannacut-transition', JSON.stringify(transitionData));
   e.dataTransfer.dropEffect = 'link';
-  console.log(`Dragging transition: ${transitionId}`);
+  //console.log(`Dragging transition: ${transitionId}`);
 };
 
 
@@ -3141,7 +3152,7 @@ const canvasRef2 = useRef<HTMLCanvasElement>(null);
       audioRef2.current.volume = 1;
 
       audioRef2.current.play();
-      console.log('audio played')
+      //console.log('audio played')
       setIsPlaying2(true);
     } else {
       audioRef2.current.pause();
@@ -3165,7 +3176,6 @@ const canvasRef2 = useRef<HTMLCanvasElement>(null);
 
 
 
-      console.log('path audio', path)
       audioRef2.current.src = path
             
 
@@ -3719,14 +3729,13 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
 
   const loadProjects = async () => {
 
-    console.log('rootpath', rootPath)
-
+    
 
     if (!rootPath) return;
     try {
       const list = await invoke('list_projects', { rootPath });
       setProjects(list as Project[]);
-      console.log('project', list)
+      
     } catch (e) { console.error(e); }
   };
 
@@ -3847,8 +3856,7 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
       });
 
       
-      console.log('setup', rootPath, projectName)
-
+      
       // 2. Atualizamos o estado do caminho do projeto atual
       setCurrentProjectPath(finalPath);
 
@@ -3858,7 +3866,7 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
 
       showNotify("Project Created!", "success");
       
-      console.log("Project initialized at:", finalPath);
+      
     } catch (e) {
       console.error(e);
       showNotify("Error creating project structure", "error");
@@ -3870,7 +3878,7 @@ const handleFadeDrag = (e: React.MouseEvent, clipId: string, type: 'in' | 'out',
 const openProject = async (path: string) => {
 
 
-  console.log('project path', path)
+  
   setCurrentProjectPath(path);
   
   setClips([]);
@@ -3884,7 +3892,7 @@ const openProject = async (path: string) => {
     setProjectConfig(config);
     setProjectName(config.name || "Unnamed Project" )
 
-    console.log('config', config)
+    
     
     const rawData = await invoke('load_latest_project', { projectPath: path });
     var parsed = JSON.parse(rawData as string) || JSON.parse('{}');
@@ -3893,7 +3901,7 @@ const openProject = async (path: string) => {
 
 
     // Update states first
-    console.log('clips and assets', parsed.clips, parsed.assets)
+    //console.log('clips and assets', parsed.clips, parsed.assets)
 
     setClips(parsed.clips || []);
     setAssets(parsed.assets || []);
@@ -3962,7 +3970,7 @@ const openProject = async (path: string) => {
   e.dataTransfer.effectAllowed = "copy";
 
   // Log para debug (opcional)
-  console.log("Dragging Font:", fontName);
+  //console.log("Dragging Font:", fontName);
 };
 
   const handleDragStart = (
@@ -4923,7 +4931,7 @@ const calculateY = (value: number, height: number, type:string = '') => {
 
   if(type == 'volume')
   {
-    console.log('volume on', (1- reverterVolume(value)) * height, value)
+    //console.log('volume on', (1- reverterVolume(value)) * height, value)
     return (1- reverterVolume(value)) * height
   }
 
@@ -5061,7 +5069,30 @@ return (
             />
             <h1 className="text-lg text-white"> Wanna <span className='font-bold'>Cut</span> <span className="text-zinc-500 font-light text-sm not-italic">MANAGER</span></h1>
           </div>
+
+
+
+          <div>
+
           <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400" onClick={() => setIsSettingsOpen(true)}><Settings size={20} /></button>
+          <button 
+            onClick={() => {
+              notifyRef.current?.toggle();
+              setHasNewMessages(false); // Remove o alerta quando o usuário abre
+            }}
+            className="relative p-2 hover:bg-white/10 rounded-full transition-all group"
+          >
+            <Bell 
+              size={20} 
+              className={hasNewMessages ? "text-cyan-400" : "text-zinc-400 group-hover:text-white"} 
+            />
+            
+            {/* O Ponto Vermelho (Badge) */}
+            {hasNewMessages && (
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-zinc-950 animate-pulse" />
+            )}
+          </button>
+          </div>
         </header>
 
         <main className="flex-1 flex overflow-hidden">
@@ -5383,7 +5414,7 @@ return (
                         const dy = e.clientY - lastMousePosRef.current.y;
 
 
-                        console.log('dx', dx)
+                       
                         
                         // Pegamos o clipe atual
                         const clip = clips.find(c => c.id === selectedClipIdRef.current);
@@ -5393,7 +5424,7 @@ return (
                         const currentPos = getInterpolatedValueWithFades(currentTime, clip, 'position') as Position;
 
 
-                        console.log('posX', currentPos.x + dx)
+                       
                         
                         
                         updateKeyframes(clip, 'position', { 
@@ -6473,6 +6504,12 @@ return (
     isProjectLoaded = {isProjectLoaded}
     showNotify = {showNotify}
    
+  />
+
+
+  <Notifications 
+  ref={notifyRef} 
+  onNewNotifications={(has) => setHasNewMessages(has)} 
   />
   </div>
 );

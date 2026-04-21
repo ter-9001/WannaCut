@@ -33,3 +33,4 @@ base64 = "0.21"
 tokio = { version = "1", features = ["full"] }
 image = "0.24"
 fs_extra = "1.3.0"
+reqwest = { version = "0.13.2", features = ["json"] }

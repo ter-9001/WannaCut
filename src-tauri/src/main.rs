@@ -116,6 +116,131 @@ pub struct Clip {
 use tauri::Emitter; // Adicione este import no topo
 
 
+// 1. Você PRECISA desta struct definida para os erros E0425 sumirem
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Notification {
+    pub id: String,
+    pub title: String,
+    pub type_: Option<String>,
+    pub description: String,
+    pub image: Option<String>,
+    pub link: Option<String>,
+    pub link_text: Option<String>,
+    pub repeat: bool
+}
+
+#[tauri::command]
+async fn check_notifications(settings_path: String) -> Result<Vec<Notification>, String> {
+    let path = std::path::Path::new(&settings_path).join("seen_notifications.json");
+
+    // 2. Usando o reqwest que você acabou de adicionar
+    let url = "https://wannacut.app/notifications.json";
+    let client = reqwest::Client::new();
+    
+    // Especificamos que o erro vindo do reqwest é um reqwest::Error para o compilador não se perder
+    let response = client.get(url)
+        .header("User-Agent", "WannaCut-App")
+        .send()
+        .await
+        .map_err(|e: reqwest::Error| e.to_string())?;
+    
+    let data: serde_json::Value = response.json()
+        .await
+        .map_err(|e: reqwest::Error| e.to_string())?;
+        
+    let remote_msgs: Vec<Notification> = serde_json::from_value(data["messages"].clone())
+        .unwrap_or_default();
+
+    // 3. Lógica de leitura do arquivo local
+    let seen_ids: Vec<String> = if path.exists() {
+        let content = std::fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string());
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let mut to_show = Vec::new();
+    let mut updated_seen_ids = seen_ids.clone();
+
+    for msg in remote_msgs {
+        let already_seen = seen_ids.contains(&msg.id);
+        if !already_seen || msg.repeat {
+            to_show.push(msg.clone());
+            if !already_seen {
+                updated_seen_ids.push(msg.id.clone());
+            }
+        }
+    }
+
+    // Salva os novos IDs vistos
+    std::fs::write(path, serde_json::to_string(&updated_seen_ids).unwrap()).ok();
+
+    Ok(to_show)
+}
+
+
+#[tauri::command]
+async fn check_notifications_test(settings_path: String) -> Result<Vec<Notification>, String> {
+    let path = std::path::Path::new(&settings_path).join("seen_notifications.json");
+
+    // --- MOCK OFFLINE (Substituindo a requisição HTTP) ---
+    let data = serde_json::json!({
+      "messages": [
+        {
+          "id": "update_01",
+          "title": "Versão 2.0 Disponível!",
+          "type_": "update",
+          "description": "Adicionamos os novos efeitos de áudio Alien e Pitch.",
+          "image": "https://wannacut.app/img/promo.jpg",
+          "link_text": "Check here",
+          "link": "https://wannacut.app/blog/v2",
+          "repeat": true
+        },
+        {
+          "id": "tip_daily",
+          "title": "Dica do Dia",
+          "description": "Use a tecla 'S' para cortar clipes rapidamente.",
+          "image": null,
+          "link": null,
+          "repeat": true
+        }
+      ]
+    });
+    // --- FIM DO MOCK ---
+
+    // Converte o JSON mockado para o nosso vetor de structs
+    let remote_msgs: Vec<Notification> = serde_json::from_value(data["messages"].clone())
+        .unwrap_or_default();
+
+    // Lógica de leitura do arquivo local (para testar se o seen_notifications funciona)
+    let seen_ids: Vec<String> = if path.exists() {
+        let content = std::fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string());
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let mut to_show = Vec::new();
+    let mut updated_seen_ids = seen_ids.clone();
+
+    for msg in remote_msgs {
+        let already_seen = seen_ids.contains(&msg.id);
+        
+        // Regra de exibição
+        if !already_seen || msg.repeat {
+            to_show.push(msg.clone());
+            if !already_seen {
+                updated_seen_ids.push(msg.id.clone());
+            }
+        }
+    }
+
+    // Tenta salvar para você verificar se o arquivo nasce na sua pasta de settings
+    std::fs::write(path, serde_json::to_string(&updated_seen_ids).unwrap()).ok();
+
+    Ok(to_show)
+}
+
 #[derive(Serialize)]
 struct ExportPayload {
     export_path: String,
@@ -1058,7 +1183,8 @@ fn main() {
             init_workspace_structure,
             transfer_folder_content,
             list_fonts,
-            get_image_data
+            get_image_data,
+            check_notifications
            
         ])
         .run(tauri::generate_context!())

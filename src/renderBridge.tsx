@@ -10,6 +10,9 @@ export interface RenderEngineContext {
   groupsRef: React.MutableRefObject<Map<string, THREE.Group>>;
   getInterpolatedValueWithFades: (time: number, clip: any, prop: string) => any;
   invoke: any; // Função invoke do Tauri
+  topAudios: React.MutableRefObject<any[]>;
+
+
 }
 
 export async function getDrawFrameFunction() {
