@@ -5469,12 +5469,12 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
 
   saveHistory(clips, assets, tracks);
 
-  console.log('dados chegaram', e)
+  //console.log('dados chegaram', e)
 
   // --- CASE 1: DROP FROM SIDEBAR (New Assets or Fonts) ---
   if (!isTimelineClip) {
 
-    console.log('chegou case 1')
+    //console.log('chegou case 1')
 
     const assetName = e.dataTransfer.getData("assetName") || dragData.name;
     const fontPath = e.dataTransfer.getData("fontPath"); // From handleDragStartText
@@ -5540,7 +5540,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   // --- CASE 2: MOVING EXISTING CLIPS ON TIMELINE ---
   else if (isTimelineClip && selectedClipIds.length > 0) {
 
-    console.log('chegou case 2')
+    //console.log('chegou case 2')
     const timeOffset = dropTime - anchorStart;
     const anchorClip = clips.find(c => c.id === deleteClipId);
     const trackOffset = anchorClip ? trackId - anchorClip.trackId : 0;
@@ -7419,7 +7419,7 @@ return (
         
         
           }
-          style={{ height: '64px' }}
+          style={{ height: '64px', minWidth: Math.max(10000, (totalDuration + 60) * pixelsPerSecond) }}
 
 
            onClick ={(e) => {
