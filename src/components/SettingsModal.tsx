@@ -105,6 +105,7 @@ export const SettingsModal: React.FC<Props> = ({
   { code: 'pt', label: 'Português' },
   { code: 'en', label: 'English' },
   { code: 'es', label: 'Español' },
+  { code: 'fr', label: 'Français' },
   { code: 'vi', label: 'Tiếng Việt' },
   { code: 'zh-CN', label: '简体中文' },
   { code: 'zh-TW', label: '繁體中文' },
